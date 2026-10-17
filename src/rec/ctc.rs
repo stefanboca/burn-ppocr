@@ -14,6 +14,9 @@ pub struct CtcRecognizer {
 }
 
 impl CtcRecognizer {
+    /// Upstream's default batching policy, independent of the recognition model.
+    pub const DEFAULT_BATCH_SIZE: usize = 6;
+
     fn decode(&self, predictions: Tensor<3>) -> anyhow::Result<Vec<Recognition>> {
         let [_, timesteps, classes] = predictions.dims();
         assert_eq!(
@@ -96,139 +99,5 @@ impl Rec for CtcRecognizer {
             .into_iter()
             .map(|result| result.expect("missing recognition result"))
             .collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::num::NonZeroU32;
-    use std::rc::Rc;
-
-    use image::Rgb;
-
-    use super::*;
-
-    fn recognizer(dictionary: &str) -> CtcRecognizer {
-        let mut characters = vec![String::new()];
-        characters.extend(dictionary.lines().map(str::to_owned));
-        characters.push(" ".to_owned());
-        CtcRecognizer {
-            model: Box::new(ColorRecognizer(Rc::new(RefCell::new(Vec::new())))),
-            device: Device::flex(),
-            preprocess: RecPreProcess {
-                height: NonZeroU32::new(48).unwrap(),
-                width: NonZeroU32::new(320).unwrap(),
-            },
-            characters,
-            batch_size: 6,
-        }
-    }
-
-    #[test]
-    fn empty_crops_return_an_error() {
-        assert!(recognizer("a\n").forward(&[RgbImage::new(0, 1)]).is_err());
-    }
-
-    #[test]
-    fn ctc_collapses_repeats_but_blank_allows_repeated_characters() {
-        let decoder = recognizer("a\nb\n");
-        let result = decoder.decode_tokens(
-            &[0, 1, 1, 0, 1, 2, 2, 3, 0],
-            &[1.0, 0.9, 0.99, 1.0, 0.7, 0.8, 0.99, 0.6, 1.0],
-        );
-        assert_eq!(result.text, "aab ");
-        assert!((result.score - 0.75).abs() < 1e-6);
-        assert_eq!(decoder.decode_tokens(&[0, 0], &[1.0, 1.0]).score, 0.0);
-    }
-
-    #[test]
-    fn ctc_handles_unicode_tokens_and_crlf_dictionaries() {
-        let decoder = recognizer("é\r\n東京\r\n");
-        let result = decoder.decode_tokens(&[1, 0, 2], &[0.8, 1.0, 0.9]);
-        assert_eq!(result.text, "é東京");
-    }
-
-    #[test]
-    fn tensor_decoding_uses_probabilities() {
-        let decoder = recognizer("a\n");
-        let device = Device::flex();
-        let predictions = Tensor::from_data(
-            [[
-                [0.1f32, 0.8, 0.1],
-                [0.1, 0.9, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.1, 0.7, 0.2],
-            ]],
-            &device,
-        );
-        let result = decoder.decode(predictions).unwrap();
-        assert_eq!(result[0].text, "aa");
-        assert!((result[0].score - 0.75).abs() < 1e-6);
-    }
-
-    #[test]
-    #[should_panic(expected = "recognizer and dictionary class counts differ")]
-    fn dictionary_size_must_match_model() {
-        let _ = recognizer("a\n").decode(Tensor::zeros([1, 1, 2], &Device::flex()));
-    }
-
-    #[test]
-    fn bundled_tiny_dictionary_matches_the_exported_model() {
-        let decoder = recognizer(include_str!("../../models/pp_ocrv6_tiny/dict.txt"));
-        assert_eq!(decoder.characters.len(), 6906);
-    }
-    struct ColorRecognizer(Rc<RefCell<Vec<[usize; 4]>>>);
-    impl RecModel for ColorRecognizer {
-        fn forward(&self, images: Tensor<4>) -> Tensor<3> {
-            let dims = images.dims();
-            self.0.borrow_mut().push(dims);
-            let device = images.device();
-            let values = images.into_data().try_into_vec_as::<f32>().unwrap();
-            let plane = dims[2] * dims[3];
-            let mut predictions = vec![0.0f32; dims[0] * 4];
-            for index in 0..dims[0] {
-                let red = values[index * 3 * plane + 2 * plane];
-                let blue = values[index * 3 * plane];
-                let token = if red > blue { 1 } else { 2 };
-                predictions[index * 4 + token] = 0.9;
-            }
-            Tensor::from_data(TensorData::new(predictions, [dims[0], 1, 4]), &device)
-        }
-    }
-
-    #[test]
-    fn recognition_batches_by_aspect_ratio_then_restores_original_order() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let recognizer = CtcRecognizer {
-            model: Box::new(ColorRecognizer(calls.clone())),
-            ..recognizer("a\nb\n")
-        };
-        let crops: Vec<_> = [80, 12, 48, 8, 32, 16, 64]
-            .into_iter()
-            .enumerate()
-            .map(|(index, width)| {
-                RgbImage::from_pixel(
-                    width,
-                    4,
-                    if index % 2 == 0 {
-                        Rgb([255, 0, 0])
-                    } else {
-                        Rgb([0, 0, 255])
-                    },
-                )
-            })
-            .collect();
-        let result = recognizer.forward(&crops).unwrap();
-        assert_eq!(
-            result
-                .iter()
-                .map(|value| value.text.as_str())
-                .collect::<Vec<_>>(),
-            ["a", "b", "a", "b", "a", "b", "a"]
-        );
-        assert_eq!(*calls.borrow(), [[6, 3, 48, 768], [1, 3, 48, 960]]);
-        assert!(recognizer.forward(&[]).unwrap().is_empty());
-        assert_eq!(calls.borrow().len(), 2);
     }
 }

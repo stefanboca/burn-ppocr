@@ -1,4 +1,3 @@
-#[cfg(feature = "pp_ocrv6_tiny")]
 use burn_onnx::ModelGen;
 
 fn main() {
@@ -7,5 +6,19 @@ fn main() {
         .input("models/pp_ocrv6_tiny/det.onnx")
         .input("models/pp_ocrv6_tiny/rec.onnx")
         .out_dir("models/pp_ocrv6_tiny")
+        .run_from_script();
+
+    #[cfg(feature = "pp_ocrv6_small")]
+    ModelGen::new()
+        .input("models/pp_ocrv6_small/det.onnx")
+        .input("models/pp_ocrv6_small/rec.onnx")
+        .out_dir("models/pp_ocrv6_small")
+        .run_from_script();
+
+    #[cfg(feature = "pp_ocrv6_medium")]
+    ModelGen::new()
+        .input("models/pp_ocrv6_medium/det.onnx")
+        .input("models/pp_ocrv6_medium/rec.onnx")
+        .out_dir("models/pp_ocrv6_medium")
         .run_from_script();
 }

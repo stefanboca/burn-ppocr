@@ -1,0 +1,11 @@
+PP-OCRv6 small models and dictionary are from PaddlePaddle/PaddleOCR.
+
+ONNX exports (inference.onnx):
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/tree/28fe5895c24fd108c19eb3e8479f4ab385fbfc62
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/tree/b8f84f0b80c529de40b4fbb3544b84fa7233a513
+
+Dictionary (ppocrv6_dict.txt):
+https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/dict/ppocrv6_dict.txt
+
+Copyright PaddlePaddle Authors. Distributed under Apache License 2.0;
+see LICENSE-PaddleOCR in this directory.

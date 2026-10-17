@@ -58,7 +58,7 @@ mod rec_model {
                     width: NonZeroU32::new(320).unwrap(),
                 },
                 characters,
-                batch_size: 6,
+                batch_size: Self::DEFAULT_BATCH_SIZE,
             }
         }
     }

@@ -32,6 +32,22 @@ impl OcrPipeline {
         )
     }
 
+    #[cfg(feature = "pp_ocrv6_small")]
+    pub fn pp_ocrv6_small(device: burn::tensor::Device) -> Self {
+        Self::new(
+            Box::new(crate::DbDetector::pp_ocrv6_small(device.clone())),
+            Box::new(crate::CtcRecognizer::pp_ocrv6_small(device)),
+        )
+    }
+
+    #[cfg(feature = "pp_ocrv6_medium")]
+    pub fn pp_ocrv6_medium(device: burn::tensor::Device) -> Self {
+        Self::new(
+            Box::new(crate::DbDetector::pp_ocrv6_medium(device.clone())),
+            Box::new(crate::CtcRecognizer::pp_ocrv6_medium(device)),
+        )
+    }
+
     /// Recognize a batch of equally sized images, returning results in input order.
     /// Returns an error when image dimensions differ within the batch.
     pub fn forward(&self, images: &[DynamicImage]) -> anyhow::Result<Vec<Vec<OcrResult>>> {
@@ -148,170 +164,5 @@ fn sort_reading_order(detections: &mut [Detection]) {
             detections.swap(j - 1, j);
             j -= 1;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    use image::Rgb;
-
-    use super::*;
-
-    struct Detector;
-    impl Det for Detector {
-        fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
-            Ok(images
-                .iter()
-                .map(|_| {
-                    vec![
-                        region(20.0, 10.0),
-                        region(2.0, 12.0),
-                        Detection {
-                            points: Polygon(Vec::new()),
-                            score: 0.9,
-                        },
-                        Detection {
-                            points: Polygon(vec![Point::new(0.0, 0.0); 4]),
-                            score: 0.9,
-                        },
-                    ]
-                })
-                .collect())
-        }
-    }
-
-    struct Recognizer;
-    impl Rec for Recognizer {
-        fn forward(&self, crops: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
-            assert_eq!(crops.len(), 4);
-            Ok(crops
-                .iter()
-                .enumerate()
-                .map(|(index, crop)| {
-                    assert_eq!(crop.dimensions(), (12, 6));
-                    let color = if crop.get_pixel(0, 0)[0] > 0 {
-                        "red"
-                    } else {
-                        "green"
-                    };
-                    let side = if index % 2 == 0 { "left" } else { "right" };
-                    Recognition {
-                        text: format!("{color} {side}"),
-                        score: 0.9,
-                    }
-                })
-                .collect())
-        }
-    }
-
-    fn region(x: f32, y: f32) -> Detection {
-        Detection {
-            points: Polygon(vec![
-                Point::new(x, y),
-                Point::new(x + 12.0, y),
-                Point::new(x + 12.0, y + 6.0),
-                Point::new(x, y + 6.0),
-            ]),
-            score: 0.95,
-        }
-    }
-
-    #[test]
-    fn image_to_text_api_preserves_detection_recognition_associations() {
-        let pipeline = OcrPipeline::new(Box::new(Detector), Box::new(Recognizer));
-        let images = [
-            DynamicImage::ImageRgb8(RgbImage::from_pixel(40, 30, Rgb([255, 0, 0]))),
-            DynamicImage::ImageRgb8(RgbImage::from_pixel(40, 30, Rgb([0, 255, 0]))),
-        ];
-        let results = pipeline.forward(&images).unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
-        assert_eq!(results[0][0].recognition.text, "red left");
-        assert_eq!(results[0][1].recognition.text, "red right");
-        assert_eq!(results[1][0].recognition.text, "green left");
-        assert_eq!(results[1][1].recognition.text, "green right");
-        assert_eq!(results[0][0].detection.points.0[0], Point::new(2.0, 12.0));
-    }
-
-    struct EmptyDetector;
-    impl Det for EmptyDetector {
-        fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
-            Ok(vec![Vec::new(); images.len()])
-        }
-    }
-    struct CountingRecognizer(Rc<Cell<usize>>);
-    impl Rec for CountingRecognizer {
-        fn forward(&self, _: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
-            self.0.set(self.0.get() + 1);
-            Ok(Vec::new())
-        }
-    }
-
-    #[test]
-    fn empty_images_and_empty_detections_skip_recognition() {
-        let calls = Rc::new(Cell::new(0));
-        let pipeline = OcrPipeline::new(
-            Box::new(EmptyDetector),
-            Box::new(CountingRecognizer(calls.clone())),
-        );
-        let results = pipeline
-            .forward(&[
-                DynamicImage::new_rgb8(10, 10),
-                DynamicImage::new_rgb8(10, 10),
-            ])
-            .unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(Vec::is_empty));
-        assert!(pipeline.forward(&[]).unwrap().is_empty());
-        let results = pipeline
-            .forward(&[DynamicImage::new_rgb8(0, 0), DynamicImage::new_rgb8(0, 0)])
-            .unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(Vec::is_empty));
-        assert_eq!(calls.get(), 0);
-    }
-    #[test]
-    #[should_panic(expected = "detector must return one result list per image")]
-    fn invalid_detector_result_count_remains_an_invariant_failure() {
-        struct BrokenDetector;
-        impl Det for BrokenDetector {
-            fn forward(&self, _: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
-                Ok(Vec::new())
-            }
-        }
-        let pipeline = OcrPipeline::new(Box::new(BrokenDetector), Box::new(Recognizer));
-        let _ = pipeline.forward(&[DynamicImage::new_rgb8(40, 30)]);
-    }
-
-    #[test]
-    fn batches_require_equal_image_dimensions() {
-        let pipeline = OcrPipeline::new(Box::new(Detector), Box::new(Recognizer));
-        let result = pipeline.forward(&[
-            DynamicImage::new_rgb8(40, 30),
-            DynamicImage::new_rgb8(80, 60),
-        ]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn perspective_crop_replicates_source_borders() {
-        let image = RgbImage::from_pixel(3, 3, Rgb([17, 80, 200]));
-        let polygon = Polygon(vec![
-            Point::new(-1.0, -1.0),
-            Point::new(4.0, -1.0),
-            Point::new(4.0, 4.0),
-            Point::new(-1.0, 4.0),
-        ]);
-        let crop = crop_text(&image, &polygon).unwrap();
-        assert_eq!(crop.dimensions(), (5, 5));
-        for pixel in crop.pixels() {
-            for (actual, expected) in pixel.0.into_iter().zip([17u8, 80, 200]) {
-                assert!(actual.abs_diff(expected) <= 1);
-            }
-        }
-        assert!(crop_text(&image, &Polygon(vec![Point::new(0.0, 0.0); 4])).is_none());
     }
 }

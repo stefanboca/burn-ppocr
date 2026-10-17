@@ -5,7 +5,7 @@ edition = "2024"
 
 [[example]]
 name = "ocr"
-required-features = ["pp_ocrv6_tiny"]
+required-features = ["pp_ocrv6_medium"]
 
 [dependencies]
 anyhow = "1"
@@ -23,4 +23,6 @@ burn-onnx = "0.22.0"
 
 [features]
 default = []
+pp_ocrv6_medium = []
+pp_ocrv6_small = []
 pp_ocrv6_tiny = []

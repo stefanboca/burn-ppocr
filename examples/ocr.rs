@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
                 .decode()?,
         );
     }
-    let pipeline = OcrPipeline::pp_ocrv6_tiny(Device::default());
+    let pipeline = OcrPipeline::pp_ocrv6_medium(Device::default());
     for (path, results) in paths.iter().zip(pipeline.forward(&images)?) {
         if paths.len() > 1 {
             println!("{}", std::path::Path::new(path).display());
