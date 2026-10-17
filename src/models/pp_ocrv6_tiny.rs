@@ -1,4 +1,5 @@
 mod det_model {
+    use crate::det::preprocess::DetPreProcess;
     use crate::det::{DbDetector, DetModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_tiny/det.rs"));
@@ -11,14 +12,23 @@ mod det_model {
         }
     }
 
-    impl DbDetector<Model> {
+    impl DbDetector {
         pub fn pp_ocrv6_tiny(device: Device) -> Self {
-            Self::new(Model::from_file(WEIGHTS_FILE, &device), device)
+            Self {
+                model: Box::new(Model::from_file(WEIGHTS_FILE, &device)),
+                device,
+                preprocess: DetPreProcess { max_side: 960 },
+                thresh: 0.2,
+                box_thresh: 0.4,
+                max_candidates: 3000,
+                unclip_ratio: 1.4,
+            }
         }
     }
 }
 
 mod rec_model {
+    use crate::rec::preprocess::RecPreProcess;
     use crate::rec::{CtcRecognizer, RecModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_tiny/rec.rs"));
@@ -32,9 +42,22 @@ mod rec_model {
         }
     }
 
-    impl CtcRecognizer<Model> {
+    impl CtcRecognizer {
         pub fn pp_ocrv6_tiny(device: Device) -> Self {
-            Self::new(Model::from_file(WEIGHTS_FILE, &device), device, DICTIONARY)
+            // The dictionary excludes the CTC blank and trailing space.
+            let mut characters = vec![String::new()];
+            characters.extend(DICTIONARY.lines().map(str::to_owned));
+            characters.push(" ".to_owned());
+            Self {
+                model: Box::new(Model::from_file(WEIGHTS_FILE, &device)),
+                device,
+                preprocess: RecPreProcess {
+                    height: 48,
+                    width: 320,
+                },
+                characters,
+                batch_size: 6,
+            }
         }
     }
 }

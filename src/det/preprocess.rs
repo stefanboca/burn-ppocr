@@ -5,18 +5,24 @@ pub struct DetPreProcess {
     pub max_side: u32,
 }
 
-impl Default for DetPreProcess {
-    fn default() -> Self {
-        Self { max_side: 960 }
-    }
-}
-
 impl DetPreProcess {
-    pub fn forward(&self, image: &RgbImage, device: &Device) -> Tensor<4> {
+    pub fn forward(&self, images: &[RgbImage], device: &Device) -> Tensor<4> {
+        let image = images.first().expect("detector batch must be nonempty");
+        assert!(
+            images
+                .iter()
+                .all(|other| other.dimensions() == image.dimensions()),
+            "detector images must have the same dimensions"
+        );
         let (width, height) = self.resize_shape(image.width(), image.height());
-        let resized = imageops::resize(image, width, height, imageops::FilterType::Triangle);
+        let pixels: Vec<_> = images
+            .iter()
+            .flat_map(|image| {
+                imageops::resize(image, width, height, imageops::FilterType::Triangle).into_raw()
+            })
+            .collect();
         let image = Tensor::<4>::from_data(
-            TensorData::new(resized.into_raw(), [1, height as usize, width as usize, 3])
+            TensorData::new(pixels, [images.len(), height as usize, width as usize, 3])
                 .convert::<f32>(),
             device,
         )
@@ -45,12 +51,18 @@ mod tests {
 
     #[test]
     fn detector_uses_bgr_channel_order_and_imagenet_constants() {
-        let image = RgbImage::from_pixel(32, 32, Rgb([255, 128, 0]));
-        let input = DetPreProcess::default().forward(&image, &Device::flex());
-        assert_eq!(input.dims(), [1, 3, 32, 32]);
+        let images = [
+            RgbImage::from_pixel(32, 32, Rgb([255, 128, 0])),
+            RgbImage::from_pixel(32, 32, Rgb([0, 64, 255])),
+        ];
+        let input = DetPreProcess { max_side: 960 }.forward(&images, &Device::flex());
+        assert_eq!(input.dims(), [2, 3, 32, 32]);
         let data = input.into_data().try_into_vec_as::<f32>().unwrap();
         assert!((data[0] - (0.0 - 0.485) / 0.229).abs() < 1e-5);
         assert!((data[1024] - (128.0 / 255.0 - 0.456) / 0.224).abs() < 1e-5);
         assert!((data[2048] - (1.0 - 0.406) / 0.225).abs() < 1e-5);
+        assert!((data[3072] - (1.0 - 0.485) / 0.229).abs() < 1e-5);
+        assert!((data[4096] - (64.0 / 255.0 - 0.456) / 0.224).abs() < 1e-5);
+        assert!((data[5120] - (0.0 - 0.406) / 0.225).abs() < 1e-5);
     }
 }

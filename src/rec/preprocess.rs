@@ -7,15 +7,6 @@ pub struct RecPreProcess {
     pub width: u32,
 }
 
-impl Default for RecPreProcess {
-    fn default() -> Self {
-        Self {
-            height: 48,
-            width: 320,
-        }
-    }
-}
-
 impl RecPreProcess {
     pub fn batch_width(&self, images: &[&RgbImage]) -> u32 {
         let ratio = images
@@ -96,7 +87,14 @@ mod tests {
         };
         let image = RgbImage::new(100, 47);
         assert_eq!(preprocess.batch_width(&[&image]), 102);
-        assert_eq!(RecPreProcess::default().batch_width(&[&image]), 320);
+        assert_eq!(
+            RecPreProcess {
+                height: 48,
+                width: 320
+            }
+            .batch_width(&[&image]),
+            320
+        );
     }
 
     #[test]

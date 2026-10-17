@@ -2,16 +2,31 @@ use burn::tensor::Device;
 use burn_ppocr::OcrPipeline;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args_os().nth(1).ok_or("usage: ocr IMAGE")?;
-    let image = image::ImageReader::open(path)?
-        .with_guessed_format()?
-        .decode()?;
-    let pipeline = OcrPipeline::pp_ocrv6_tiny(Device::default());
-    for result in pipeline.forward(&image) {
-        println!(
-            "{:.3}\t{}",
-            result.recognition.score, result.recognition.text
+    let paths: Vec<_> = std::env::args_os().skip(1).collect();
+    if paths.is_empty() {
+        return Err(
+            "usage: ocr IMAGE [IMAGE ...] (all images must have the same dimensions)".into(),
         );
+    }
+    let mut images = Vec::new();
+    for path in &paths {
+        images.push(
+            image::ImageReader::open(path)?
+                .with_guessed_format()?
+                .decode()?,
+        );
+    }
+    let pipeline = OcrPipeline::pp_ocrv6_tiny(Device::default());
+    for (path, results) in paths.iter().zip(pipeline.forward(&images)) {
+        if paths.len() > 1 {
+            println!("{}", std::path::Path::new(path).display());
+        }
+        for result in results {
+            println!(
+                "{:.3}\t{}",
+                result.recognition.score, result.recognition.text
+            );
+        }
     }
     Ok(())
 }

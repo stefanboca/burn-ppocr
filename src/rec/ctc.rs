@@ -4,29 +4,15 @@ use image::RgbImage;
 use super::preprocess::{RecPreProcess, orient_crop};
 use super::{Rec, RecModel, Recognition};
 
-pub struct CtcRecognizer<M> {
-    model: M,
-    device: Device,
-    preprocess: RecPreProcess,
-    characters: Vec<String>,
-    batch_size: usize,
+pub struct CtcRecognizer {
+    pub model: Box<dyn RecModel>,
+    pub device: Device,
+    pub preprocess: RecPreProcess,
+    pub characters: Vec<String>,
+    pub batch_size: usize,
 }
 
-impl<M: RecModel> CtcRecognizer<M> {
-    /// The dictionary excludes the CTC blank and trailing space, as in PaddleOCR.
-    pub fn new(model: M, device: Device, dictionary: &str) -> Self {
-        let mut characters = vec![String::new()];
-        characters.extend(dictionary.lines().map(str::to_owned));
-        characters.push(" ".to_owned());
-        Self {
-            model,
-            device,
-            preprocess: RecPreProcess::default(),
-            characters,
-            batch_size: 6,
-        }
-    }
-
+impl CtcRecognizer {
     fn decode(&self, predictions: Tensor<3>) -> Vec<Recognition> {
         let [batch, timesteps, classes] = predictions.dims();
         assert_eq!(
@@ -84,7 +70,7 @@ impl<M: RecModel> CtcRecognizer<M> {
     }
 }
 
-impl<M: RecModel> Rec for CtcRecognizer<M> {
+impl Rec for CtcRecognizer {
     fn forward(&self, crops: &[RgbImage]) -> Vec<Recognition> {
         assert!(
             crops
@@ -131,12 +117,20 @@ mod tests {
 
     use super::*;
 
-    fn recognizer(dictionary: &str) -> CtcRecognizer<ColorRecognizer> {
-        CtcRecognizer::new(
-            ColorRecognizer(Rc::new(RefCell::new(Vec::new()))),
-            Device::flex(),
-            dictionary,
-        )
+    fn recognizer(dictionary: &str) -> CtcRecognizer {
+        let mut characters = vec![String::new()];
+        characters.extend(dictionary.lines().map(str::to_owned));
+        characters.push(" ".to_owned());
+        CtcRecognizer {
+            model: Box::new(ColorRecognizer(Rc::new(RefCell::new(Vec::new())))),
+            device: Device::flex(),
+            preprocess: RecPreProcess {
+                height: 48,
+                width: 320,
+            },
+            characters,
+            batch_size: 6,
+        }
     }
 
     #[test]
@@ -209,8 +203,10 @@ mod tests {
     #[test]
     fn recognition_batches_by_aspect_ratio_then_restores_original_order() {
         let calls = Rc::new(RefCell::new(Vec::new()));
-        let recognizer =
-            CtcRecognizer::new(ColorRecognizer(calls.clone()), Device::flex(), "a\nb\n");
+        let recognizer = CtcRecognizer {
+            model: Box::new(ColorRecognizer(calls.clone())),
+            ..recognizer("a\nb\n")
+        };
         let crops: Vec<_> = [80, 12, 48, 8, 32, 16, 64]
             .into_iter()
             .enumerate()

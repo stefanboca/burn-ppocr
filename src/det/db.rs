@@ -1,40 +1,26 @@
 use burn::prelude::*;
 use image::{GrayImage, Luma, RgbImage};
-use imageproc::point::Point;
 
 use super::preprocess::DetPreProcess;
 use super::{Det, DetModel, Detection};
-use crate::geometry::Polygon;
+use crate::geometry::{Point, Polygon};
 
-pub struct DbDetector<M> {
-    model: M,
-    device: Device,
-    preprocess: DetPreProcess,
+pub struct DbDetector {
+    pub model: Box<dyn DetModel>,
+    pub device: Device,
+    pub preprocess: DetPreProcess,
     pub thresh: f32,
     pub box_thresh: f32,
     pub max_candidates: usize,
     pub unclip_ratio: f32,
 }
 
-impl<M: DetModel> DbDetector<M> {
-    pub fn new(model: M, device: Device) -> Self {
-        Self {
-            model,
-            device,
-            preprocess: DetPreProcess::default(),
-            thresh: 0.2,
-            box_thresh: 0.4,
-            max_candidates: 3000,
-            unclip_ratio: 1.4,
-        }
-    }
-
-    fn postprocess(&self, maps: Tensor<4>, src_shape: (usize, usize)) -> Vec<Detection> {
-        let [batch, channels, height, width] = maps.dims();
-        assert_eq!(batch, 1);
+impl DbDetector {
+    fn postprocess(&self, maps: Tensor<4>, src_shape: (usize, usize)) -> Vec<Vec<Detection>> {
+        let [_, channels, height, width] = maps.dims();
         assert_eq!(channels, 1);
         assert!(height > 0 && width > 0);
-        // Contours and geometry are CPU operations. Read the probability map once,
+        // Contours and geometry are CPU operations. Read the batch once,
         // rather than transferring a separate polygon mask for every candidate.
         let pred = maps
             .into_data()
@@ -44,7 +30,9 @@ impl<M: DetModel> DbDetector<M> {
             pred.iter().all(|value| value.is_finite()),
             "detector returned nonfinite probabilities"
         );
-        self.boxes_from_bitmap(&pred, (height, width), src_shape)
+        pred.chunks_exact(height * width)
+            .map(|pred| self.boxes_from_bitmap(pred, (height, width), src_shape))
+            .collect()
     }
 
     fn boxes_from_bitmap(
@@ -92,13 +80,23 @@ impl<M: DetModel> DbDetector<M> {
     }
 }
 
-impl<M: DetModel> Det for DbDetector<M> {
-    fn forward(&self, image: &RgbImage) -> Vec<Detection> {
-        if image.width() == 0 || image.height() == 0 {
+impl Det for DbDetector {
+    fn forward(&self, images: &[RgbImage]) -> Vec<Vec<Detection>> {
+        let Some(image) = images.first() else {
             return Vec::new();
+        };
+        assert!(
+            images
+                .iter()
+                .all(|other| other.dimensions() == image.dimensions()),
+            "detector images must have the same dimensions"
+        );
+        if image.width() == 0 || image.height() == 0 {
+            return vec![Vec::new(); images.len()];
         }
-        let input = self.preprocess.forward(image, &self.device);
+        let input = self.preprocess.forward(images, &self.device);
         let maps = self.model.forward(input);
+        assert_eq!(maps.dims()[0], images.len(), "detector batch size mismatch");
         self.postprocess(maps, (image.height() as usize, image.width() as usize))
     }
 }
@@ -120,17 +118,17 @@ fn polygon_score(pred: &[f32], shape: (usize, usize), polygon: &Polygon) -> f32 
 
 fn get_mini_boxes(contour: &Polygon) -> (Polygon, f32) {
     let (mut points, short_side) = min_area_rect(contour);
-    points.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    points.sort_by(|a, b| a.x.total_cmp(&b.x));
     let [
         mut left_top,
         mut left_bottom,
         mut right_top,
         mut right_bottom,
     ] = points;
-    if left_top[1] > left_bottom[1] {
+    if left_top.y > left_bottom.y {
         std::mem::swap(&mut left_top, &mut left_bottom);
     }
-    if right_top[1] > right_bottom[1] {
+    if right_top.y > right_bottom.y {
         std::mem::swap(&mut right_top, &mut right_bottom);
     }
     (
@@ -155,7 +153,7 @@ fn find_contours(mask: &GrayImage) -> Vec<Polygon> {
                 contour
                     .points
                     .into_iter()
-                    .map(|point| [point.x as f32, point.y as f32])
+                    .map(|point| Point::new(point.x as f32, point.y as f32))
                     .collect(),
             )
         })
@@ -163,24 +161,24 @@ fn find_contours(mask: &GrayImage) -> Vec<Polygon> {
         .collect()
 }
 
-fn min_area_rect(contour: &Polygon) -> ([[f32; 2]; 4], f32) {
+fn min_area_rect(contour: &Polygon) -> ([Point<f32>; 4], f32) {
     let hull = imageproc::geometry::convex_hull(
         contour
             .0
             .iter()
-            .map(|&[x, y]| Point::new(x as f64, y as f64))
+            .map(|point| Point::new(point.x as f64, point.y as f64))
             .collect::<Vec<_>>(),
     );
     if hull.len() < 2 {
-        let point = hull
-            .first()
-            .map_or([0.0; 2], |point| [point.x as f32, point.y as f32]);
+        let point = hull.first().map_or(Point::new(0.0, 0.0), |point| {
+            Point::new(point.x as f32, point.y as f32)
+        });
         return ([point; 4], 0.0);
     }
     // imageproc's min_area_rect rounds corners to integers, even for float inputs.
     // Project the hull onto each edge to retain OpenCV-style floating-point corners.
     let mut best_area = f64::INFINITY;
-    let mut best = ([[0.0; 2]; 4], 0.0);
+    let mut best = ([Point::new(0.0, 0.0); 4], 0.0);
     for (a, b) in hull.iter().zip(hull.iter().cycle().skip(1)) {
         let length = (b.x - a.x).hypot(b.y - a.y);
         if length == 0.0 {
@@ -206,7 +204,7 @@ fn min_area_rect(contour: &Polygon) -> ([[f32; 2]; 4], f32) {
         if area < best_area {
             best_area = area;
             let points = [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]
-                .map(|[x, y]| [(x * ux - y * uy) as f32, (x * uy + y * ux) as f32]);
+                .map(|[x, y]| Point::new((x * ux - y * uy) as f32, (x * uy + y * ux) as f32));
             best = (points, width.min(height) as f32);
         }
     }
@@ -218,7 +216,7 @@ fn fill_poly(polygon: &Polygon, shape: (usize, usize)) -> GrayImage {
     let mut points: Vec<_> = polygon
         .0
         .iter()
-        .map(|&[x, y]| Point::new(x as i32, y as i32))
+        .map(|point| Point::new(point.x as i32, point.y as i32))
         .collect();
     if points.len() > 1 && points.first() == points.last() {
         points.pop();
@@ -236,8 +234,21 @@ mod tests {
     struct MapModel(Tensor<4>);
 
     impl DetModel for MapModel {
-        fn forward(&self, _: Tensor<4>) -> Tensor<4> {
+        fn forward(&self, images: Tensor<4>) -> Tensor<4> {
+            assert_eq!(images.dims()[0], self.0.dims()[0]);
             self.0.clone()
+        }
+    }
+
+    fn detector(maps: Tensor<4>) -> DbDetector {
+        DbDetector {
+            model: Box::new(MapModel(maps)),
+            device: Device::flex(),
+            preprocess: DetPreProcess { max_side: 960 },
+            thresh: 0.2,
+            box_thresh: 0.4,
+            max_candidates: 3000,
+            unclip_ratio: 1.4,
         }
     }
 
@@ -253,20 +264,56 @@ mod tests {
             TensorData::new(probabilities, [1, 1, 48, 80]),
             &Device::flex(),
         );
-        let detector = DbDetector::new(MapModel(maps), Device::flex());
-        let detections = detector.forward(&RgbImage::new(160, 96));
+        let detector = detector(maps);
+        let detections = detector.forward(&[RgbImage::new(160, 96)]);
         assert_eq!(detections.len(), 1);
-        let detection = &detections[0];
+        assert_eq!(detections[0].len(), 1);
+        let detection = &detections[0][0];
         assert_eq!(detection.points.0.len(), 4);
         assert!((detection.score - 0.9).abs() < 1e-4);
         let bounds = detection.points.aabb();
-        assert!(bounds.min[0] < 20.0 && bounds.max[0] > 80.0);
-        assert!(bounds.min[1] < 20.0 && bounds.max[1] > 50.0);
+        assert!(bounds.min.x < 20.0 && bounds.max.x > 80.0);
+        assert!(bounds.min.y < 20.0 && bounds.max.y > 50.0);
+    }
+
+    #[test]
+    fn detector_preserves_each_map_and_empty_results_in_a_batch() {
+        let mut probabilities = vec![0.0f32; 3 * 32 * 32];
+        for y in 8..=22 {
+            for x in 6..=16 {
+                probabilities[y * 32 + x] = 0.9;
+            }
+        }
+        for y in 5..=18 {
+            for x in 14..=24 {
+                probabilities[32 * 32 + y * 32 + x] = 0.8;
+            }
+        }
+        let maps = Tensor::from_data(
+            TensorData::new(probabilities, [3, 1, 32, 32]),
+            &Device::flex(),
+        );
+        let detector = detector(maps);
+        let images = vec![RgbImage::new(64, 96); 3];
+        let results = detector.forward(&images);
+        assert_eq!(results.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 0]);
+        assert!((results[0][0].score - 0.9).abs() < 1e-4);
+        assert!((results[1][0].score - 0.8).abs() < 1e-4);
+        assert!(results[0][0].points.aabb().min.x < results[1][0].points.aabb().min.x);
+        assert!(detector.forward(&[]).is_empty());
+        let empty = detector.forward(&vec![RgbImage::new(0, 0); 3]);
+        assert_eq!(empty.len(), 3);
+        assert!(empty.iter().all(Vec::is_empty));
     }
 
     #[test]
     fn minimum_rectangle_keeps_fractional_rotated_corners() {
-        let polygon = Polygon(vec![[0.0, 0.0], [4.0, 2.0], [3.0, 4.0], [-1.0, 2.0]]);
+        let polygon = Polygon(vec![
+            Point::new(0.0, 0.0),
+            Point::new(4.0, 2.0),
+            Point::new(3.0, 4.0),
+            Point::new(-1.0, 2.0),
+        ]);
         let (rectangle, short_side) = get_mini_boxes(&polygon);
         assert!((rectangle.area() - 10.0).abs() < 1e-4);
         assert!((short_side - 5.0f32.sqrt()).abs() < 1e-4);
@@ -275,7 +322,7 @@ mod tests {
     #[test]
     fn threshold_comparison_is_strict() {
         let maps = Tensor::full([1, 1, 16, 16], 0.2, &Device::flex());
-        let detector = DbDetector::new(MapModel(maps), Device::flex());
-        assert!(detector.forward(&RgbImage::new(16, 16)).is_empty());
+        let detector = detector(maps);
+        assert!(detector.forward(&[RgbImage::new(16, 16)])[0].is_empty());
     }
 }
