@@ -1,12 +1,10 @@
 use burn::tensor::Device;
 use burn_ppocr::OcrPipeline;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let paths: Vec<_> = std::env::args_os().skip(1).collect();
     if paths.is_empty() {
-        return Err(
-            "usage: ocr IMAGE [IMAGE ...] (all images must have the same dimensions)".into(),
-        );
+        anyhow::bail!("usage: ocr IMAGE [IMAGE ...] (all images must have the same dimensions)");
     }
     let mut images = Vec::new();
     for path in &paths {
@@ -17,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let pipeline = OcrPipeline::pp_ocrv6_tiny(Device::default());
-    for (path, results) in paths.iter().zip(pipeline.forward(&images)) {
+    for (path, results) in paths.iter().zip(pipeline.forward(&images)?) {
         if paths.len() > 1 {
             println!("{}", std::path::Path::new(path).display());
         }

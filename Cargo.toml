@@ -8,6 +8,7 @@ name = "ocr"
 required-features = ["pp_ocrv6_tiny"]
 
 [dependencies]
+anyhow = "1"
 burn = { version = "0.22.0", features = ["cpu", "flex", "vulkan"] }
 burn-store = "0.22.0"
 clipper2-rust = "1.2.0"

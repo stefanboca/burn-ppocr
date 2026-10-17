@@ -10,7 +10,7 @@ use crate::geometry::Polygon;
 /// A detector including its model-specific input and output processing.
 /// All images in a batch must have the same dimensions. Results follow input order.
 pub trait Det {
-    fn forward(&self, images: &[RgbImage]) -> Vec<Vec<Detection>>;
+    fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>>;
 }
 
 /// The tensor interface implemented by generated detection models.

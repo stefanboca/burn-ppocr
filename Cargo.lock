@@ -1011,6 +1011,7 @@ dependencies = [
 name = "burn-ppocr"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "branches",
  "burn",
  "burn-onnx",

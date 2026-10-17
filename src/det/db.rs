@@ -1,5 +1,9 @@
+use std::num::NonZeroUsize;
+
+use anyhow::{Context, ensure};
 use burn::prelude::*;
 use image::{GrayImage, Luma, RgbImage};
+use imageproc::contours::{BorderType, find_contours};
 
 use super::preprocess::DetPreProcess;
 use super::{Det, DetModel, Detection};
@@ -16,32 +20,29 @@ pub struct DbDetector {
 }
 
 impl DbDetector {
-    fn postprocess(&self, maps: Tensor<4>, src_shape: (usize, usize)) -> Vec<Vec<Detection>> {
-        let [_, channels, height, width] = maps.dims();
-        assert_eq!(channels, 1);
-        assert!(height > 0 && width > 0);
-        // Contours and geometry are CPU operations. Read the batch once,
-        // rather than transferring a separate polygon mask for every candidate.
-        let pred = maps
-            .into_data()
-            .try_into_vec_as::<f32>()
-            .expect("detection probabilities must be convertible to f32");
-        assert!(
-            pred.iter().all(|value| value.is_finite()),
-            "detector returned nonfinite probabilities"
-        );
-        pred.chunks_exact(height * width)
-            .map(|pred| self.boxes_from_bitmap(pred, (height, width), src_shape))
+    fn postprocess(
+        &self,
+        maps: Tensor<3>,
+        src_shape: (NonZeroUsize, NonZeroUsize),
+    ) -> anyhow::Result<Vec<Vec<Detection>>> {
+        maps.iter_dim(0)
+            .map(|map| self.boxes_from_bitmap(map.squeeze_dim(0), src_shape))
             .collect()
     }
 
     fn boxes_from_bitmap(
         &self,
-        pred: &[f32],
-        shape: (usize, usize),
-        src_shape: (usize, usize),
-    ) -> Vec<Detection> {
-        let (height, width) = shape;
+        pred: Tensor<2>,
+        src_shape: (NonZeroUsize, NonZeroUsize),
+    ) -> anyhow::Result<Vec<Detection>> {
+        let [height, width] = pred.dims();
+        let shape = (
+            NonZeroUsize::new(height).unwrap(),
+            NonZeroUsize::new(width).unwrap(),
+        );
+        let pred = pred
+            .try_into_vec_as::<f32>()
+            .context("reading detector probabilities")?;
         let mask = GrayImage::from_raw(
             width as u32,
             height as u32,
@@ -51,12 +52,16 @@ impl DbDetector {
         )
         .unwrap();
         let mut detections = Vec::new();
-        for contour in find_contours(&mask).into_iter().take(self.max_candidates) {
-            let (points, short_side) = get_mini_boxes(&contour);
+        for contour in find_contours::<i32>(&mask)
+            .into_iter()
+            .filter(|contour| contour.border_type == BorderType::Outer && contour.parent.is_none())
+            .take(self.max_candidates)
+        {
+            let (points, short_side) = get_mini_boxes(&contour.points);
             if short_side < 3.0 {
                 continue;
             }
-            let score = polygon_score(pred, shape, &points);
+            let score = polygon_score(&pred, shape, &points);
             if score < self.box_thresh {
                 continue;
             }
@@ -67,7 +72,7 @@ impl DbDetector {
             if expanded.0.is_empty() {
                 continue;
             }
-            let (points, short_side) = get_mini_boxes(expanded);
+            let (points, short_side) = get_mini_boxes(&expanded.0);
             if short_side < 5.0 {
                 continue;
             }
@@ -76,32 +81,39 @@ impl DbDetector {
                 score,
             });
         }
-        detections
+        Ok(detections)
     }
 }
 
 impl Det for DbDetector {
-    fn forward(&self, images: &[RgbImage]) -> Vec<Vec<Detection>> {
+    fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
         let Some(image) = images.first() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        assert!(
+        ensure!(
             images
                 .iter()
                 .all(|other| other.dimensions() == image.dimensions()),
             "detector images must have the same dimensions"
         );
-        if image.width() == 0 || image.height() == 0 {
-            return vec![Vec::new(); images.len()];
-        }
-        let input = self.preprocess.forward(images, &self.device);
+        let Some(src_shape) = NonZeroUsize::new(image.height() as usize)
+            .zip(NonZeroUsize::new(image.width() as usize))
+        else {
+            return Ok(vec![Vec::new(); images.len()]);
+        };
+        let input = self.preprocess.forward(images, src_shape, &self.device);
         let maps = self.model.forward(input);
         assert_eq!(maps.dims()[0], images.len(), "detector batch size mismatch");
-        self.postprocess(maps, (image.height() as usize, image.width() as usize))
+        let channels = maps.dims()[1];
+        ensure!(
+            channels == 1,
+            "detector maps must have one channel, got {channels}"
+        );
+        self.postprocess(maps.squeeze_dim(1), src_shape)
     }
 }
 
-fn polygon_score(pred: &[f32], shape: (usize, usize), polygon: &Polygon) -> f32 {
+fn polygon_score(pred: &[f32], shape: (NonZeroUsize, NonZeroUsize), polygon: &Polygon) -> f32 {
     let [ys, xs] = polygon.aabb().clamp(shape.0, shape.1).pixel_ranges();
     let local = polygon.translated(-(xs.start as f32), -(ys.start as f32));
     let mask = fill_poly(&local, (ys.len(), xs.len()));
@@ -109,14 +121,14 @@ fn polygon_score(pred: &[f32], shape: (usize, usize), polygon: &Polygon) -> f32 
     let mut count = 0;
     for (x, y, pixel) in mask.enumerate_pixels() {
         if pixel[0] != 0 {
-            sum += pred[(ys.start + y as usize) * shape.1 + xs.start + x as usize];
+            sum += pred[(ys.start + y as usize) * shape.1.get() + xs.start + x as usize];
             count += 1;
         }
     }
     if count == 0 { 0.0 } else { sum / count as f32 }
 }
 
-fn get_mini_boxes(contour: &Polygon) -> (Polygon, f32) {
+fn get_mini_boxes<T: Copy + Into<f64>>(contour: &[Point<T>]) -> (Polygon, f32) {
     let (mut points, short_side) = min_area_rect(contour);
     points.sort_by(|a, b| a.x.total_cmp(&b.x));
     let [
@@ -145,28 +157,11 @@ fn unclip(polygon: &Polygon, ratio: f32) -> Vec<Polygon> {
     polygon.offset(polygon.area() * ratio / perimeter)
 }
 
-fn find_contours(mask: &GrayImage) -> Vec<Polygon> {
-    imageproc::contours::find_contours::<i32>(mask)
-        .into_iter()
-        .map(|contour| {
-            Polygon(
-                contour
-                    .points
-                    .into_iter()
-                    .map(|point| Point::new(point.x as f32, point.y as f32))
-                    .collect(),
-            )
-        })
-        .filter(|polygon| !polygon.0.is_empty())
-        .collect()
-}
-
-fn min_area_rect(contour: &Polygon) -> ([Point<f32>; 4], f32) {
+fn min_area_rect<T: Copy + Into<f64>>(contour: &[Point<T>]) -> ([Point<f32>; 4], f32) {
     let hull = imageproc::geometry::convex_hull(
         contour
-            .0
             .iter()
-            .map(|point| Point::new(point.x as f64, point.y as f64))
+            .map(|point| Point::new(point.x.into(), point.y.into()))
             .collect::<Vec<_>>(),
     );
     if hull.len() < 2 {
@@ -253,6 +248,23 @@ mod tests {
     }
 
     #[test]
+    fn multiple_probability_map_channels_return_an_error() {
+        let maps = Tensor::zeros([1, 2, 32, 32], &Device::flex());
+        assert!(detector(maps).forward(&[RgbImage::new(32, 32)]).is_err());
+    }
+
+    #[test]
+    fn mixed_image_dimensions_return_an_error() {
+        let maps = Tensor::zeros([1, 1, 32, 32], &Device::flex());
+        let detector = detector(maps);
+        assert!(
+            detector
+                .forward(&[RgbImage::new(32, 32), RgbImage::new(64, 32)],)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn detector_extracts_expands_and_rescales_a_text_region() {
         let mut probabilities = vec![0.0f32; 80 * 48];
         for y in 10..=25 {
@@ -265,7 +277,7 @@ mod tests {
             &Device::flex(),
         );
         let detector = detector(maps);
-        let detections = detector.forward(&[RgbImage::new(160, 96)]);
+        let detections = detector.forward(&[RgbImage::new(160, 96)]).unwrap();
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].len(), 1);
         let detection = &detections[0][0];
@@ -295,15 +307,40 @@ mod tests {
         );
         let detector = detector(maps);
         let images = vec![RgbImage::new(64, 96); 3];
-        let results = detector.forward(&images);
+        let results = detector.forward(&images).unwrap();
         assert_eq!(results.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 0]);
         assert!((results[0][0].score - 0.9).abs() < 1e-4);
         assert!((results[1][0].score - 0.8).abs() < 1e-4);
         assert!(results[0][0].points.aabb().min.x < results[1][0].points.aabb().min.x);
-        assert!(detector.forward(&[]).is_empty());
-        let empty = detector.forward(&vec![RgbImage::new(0, 0); 3]);
+        assert!(detector.forward(&[]).unwrap().is_empty());
+        let empty = detector.forward(&vec![RgbImage::new(0, 0); 3]).unwrap();
         assert_eq!(empty.len(), 3);
         assert!(empty.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn detector_ignores_holes_and_nested_foreground_regions() {
+        let mut probabilities = vec![0.0f32; 64 * 64];
+        for y in 5..=58 {
+            for x in 5..=58 {
+                let in_hole = (15..=48).contains(&x) && (15..=48).contains(&y);
+                let in_island = (25..=38).contains(&x) && (25..=38).contains(&y);
+                if !in_hole || in_island {
+                    probabilities[y * 64 + x] = 0.9;
+                }
+            }
+        }
+        let maps = Tensor::from_data(
+            TensorData::new(probabilities, [1, 1, 64, 64]),
+            &Device::flex(),
+        );
+        let mut detector = detector(maps);
+        detector.box_thresh = 0.0;
+        let detections = detector.forward(&[RgbImage::new(64, 64)]).unwrap();
+        assert_eq!(detections[0].len(), 1);
+        let bounds = detections[0][0].points.aabb();
+        assert!(bounds.min.x < 5.0 && bounds.max.x > 58.0);
+        assert!(bounds.min.y < 5.0 && bounds.max.y > 58.0);
     }
 
     #[test]
@@ -314,7 +351,7 @@ mod tests {
             Point::new(3.0, 4.0),
             Point::new(-1.0, 2.0),
         ]);
-        let (rectangle, short_side) = get_mini_boxes(&polygon);
+        let (rectangle, short_side) = get_mini_boxes(&polygon.0);
         assert!((rectangle.area() - 10.0).abs() < 1e-4);
         assert!((short_side - 5.0f32.sqrt()).abs() < 1e-4);
     }
@@ -323,6 +360,6 @@ mod tests {
     fn threshold_comparison_is_strict() {
         let maps = Tensor::full([1, 1, 16, 16], 0.2, &Device::flex());
         let detector = detector(maps);
-        assert!(detector.forward(&[RgbImage::new(16, 16)])[0].is_empty());
+        assert!(detector.forward(&[RgbImage::new(16, 16)]).unwrap()[0].is_empty());
     }
 }

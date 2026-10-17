@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use clipper2_rust::{EndType, JoinType, Point64, inflate_paths_64};
@@ -8,8 +9,11 @@ pub struct Polygon(pub Vec<Point<f32>>);
 
 impl Polygon {
     /// Scale between `(height, width)` shapes, round, and clip to width/height.
-    pub fn rescaled(&self, from: (usize, usize), to: (usize, usize)) -> Self {
-        assert!(from.0 > 0 && from.1 > 0);
+    pub fn rescaled(
+        &self,
+        from: (NonZeroUsize, NonZeroUsize),
+        to: (NonZeroUsize, NonZeroUsize),
+    ) -> Self {
         Self(
             self.0
                 .iter()
@@ -88,16 +92,20 @@ impl Polygon {
     }
 }
 
-fn rescale_point(point: Point<f32>, from: (usize, usize), to: (usize, usize)) -> Point<f32> {
+fn rescale_point(
+    point: Point<f32>,
+    from: (NonZeroUsize, NonZeroUsize),
+    to: (NonZeroUsize, NonZeroUsize),
+) -> Point<f32> {
     let (height, width) = from;
     let (dest_height, dest_width) = to;
     Point::new(
-        (point.x / width as f32 * dest_width as f32)
+        (point.x / width.get() as f32 * dest_width.get() as f32)
             .round_ties_even()
-            .clamp(0.0, dest_width as f32),
-        (point.y / height as f32 * dest_height as f32)
+            .clamp(0.0, dest_width.get() as f32),
+        (point.y / height.get() as f32 * dest_height.get() as f32)
             .round_ties_even()
-            .clamp(0.0, dest_height as f32),
+            .clamp(0.0, dest_height.get() as f32),
     )
 }
 
@@ -108,9 +116,9 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub fn clamp(self, height: usize, width: usize) -> Self {
-        let xmax = (width - 1) as f32;
-        let ymax = (height - 1) as f32;
+    pub fn clamp(self, height: NonZeroUsize, width: NonZeroUsize) -> Self {
+        let xmax = (width.get() - 1) as f32;
+        let ymax = (height.get() - 1) as f32;
         Self {
             min: Point::new(self.min.x.clamp(0.0, xmax), self.min.y.clamp(0.0, ymax)),
             max: Point::new(self.max.x.clamp(0.0, xmax), self.max.y.clamp(0.0, ymax)),
@@ -130,6 +138,10 @@ impl Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nz(value: usize) -> NonZeroUsize {
+        NonZeroUsize::new(value).unwrap()
+    }
 
     #[test]
     fn round_offset_expands_both_polygon_windings() {
@@ -170,7 +182,10 @@ mod tests {
             Point::new(4.1, 7.5),
             Point::new(0.0, 3.0),
         ]);
-        assert_eq!(polygon.aabb().clamp(6, 8).pixel_ranges(), [1..6, 0..6]);
+        assert_eq!(
+            polygon.aabb().clamp(nz(6), nz(8)).pixel_ranges(),
+            [1..6, 0..6]
+        );
     }
 
     #[test]
@@ -182,7 +197,7 @@ mod tests {
             Point::new(30.0, 20.0),
         ]);
         assert_eq!(
-            polygon.rescaled((10, 20), (5, 10)),
+            polygon.rescaled((nz(10), nz(20)), (nz(5), nz(10))),
             Polygon(vec![
                 Point::new(0.0, 0.0),
                 Point::new(0.0, 0.0),
@@ -200,7 +215,7 @@ mod tests {
             Point::new(3.0, 5.0),
             Point::new(1.0, 3.0),
         ]);
-        let scaled = polygon.rescaled((6, 6), (6, 12));
+        let scaled = polygon.rescaled((nz(6), nz(6)), (nz(6), nz(12)));
         assert_eq!(
             scaled,
             Polygon(vec![

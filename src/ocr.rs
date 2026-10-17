@@ -1,3 +1,4 @@
+use anyhow::ensure;
 use image::{DynamicImage, GenericImageView, RgbImage};
 use imageproc::geometric_transformations::{Border, Interpolation, Projection, warp_into};
 
@@ -32,21 +33,29 @@ impl OcrPipeline {
     }
 
     /// Recognize a batch of equally sized images, returning results in input order.
-    pub fn forward(&self, images: &[DynamicImage]) -> Vec<Vec<OcrResult>> {
+    /// Returns an error when image dimensions differ within the batch.
+    pub fn forward(&self, images: &[DynamicImage]) -> anyhow::Result<Vec<Vec<OcrResult>>> {
         let Some(image) = images.first() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let shape = image.dimensions();
-        assert!(
-            images.iter().all(|image| image.dimensions() == shape),
-            "OCR images must have the same dimensions"
-        );
+        for (image_index, image) in images.iter().enumerate().skip(1) {
+            let actual = image.dimensions();
+            ensure!(
+                actual == shape,
+                "image {image_index} has dimensions {}x{}; expected {}x{}",
+                actual.0,
+                actual.1,
+                shape.0,
+                shape.1
+            );
+        }
         let mut results: Vec<Vec<OcrResult>> = (0..images.len()).map(|_| Vec::new()).collect();
         if shape.0 == 0 || shape.1 == 0 {
-            return results;
+            return Ok(results);
         }
         let images: Vec<_> = images.iter().map(DynamicImage::to_rgb8).collect();
-        let detections = self.det.forward(&images);
+        let detections = self.det.forward(&images)?;
         assert_eq!(
             detections.len(),
             images.len(),
@@ -65,9 +74,9 @@ impl OcrPipeline {
             }
         }
         if crops.is_empty() {
-            return results;
+            return Ok(results);
         }
-        let recognitions = self.rec.forward(&crops);
+        let recognitions = self.rec.forward(&crops)?;
         assert_eq!(
             recognitions.len(),
             regions.len(),
@@ -79,12 +88,15 @@ impl OcrPipeline {
                 recognition,
             });
         }
-        results
+        Ok(results)
     }
 }
 
 /// Rectify the four ordered corners without applying model-specific orientation rules.
 pub fn crop_text(image: &RgbImage, polygon: &Polygon) -> Option<RgbImage> {
+    if image.width() == 0 || image.height() == 0 {
+        return None;
+    }
     let points: [Point<f32>; 4] = polygon.0.as_slice().try_into().ok()?;
     if !points
         .iter()
@@ -150,19 +162,32 @@ mod tests {
 
     struct Detector;
     impl Det for Detector {
-        fn forward(&self, images: &[RgbImage]) -> Vec<Vec<Detection>> {
-            images
+        fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
+            Ok(images
                 .iter()
-                .map(|_| vec![region(20.0, 10.0), region(2.0, 12.0)])
-                .collect()
+                .map(|_| {
+                    vec![
+                        region(20.0, 10.0),
+                        region(2.0, 12.0),
+                        Detection {
+                            points: Polygon(Vec::new()),
+                            score: 0.9,
+                        },
+                        Detection {
+                            points: Polygon(vec![Point::new(0.0, 0.0); 4]),
+                            score: 0.9,
+                        },
+                    ]
+                })
+                .collect())
         }
     }
 
     struct Recognizer;
     impl Rec for Recognizer {
-        fn forward(&self, crops: &[RgbImage]) -> Vec<Recognition> {
+        fn forward(&self, crops: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
             assert_eq!(crops.len(), 4);
-            crops
+            Ok(crops
                 .iter()
                 .enumerate()
                 .map(|(index, crop)| {
@@ -178,7 +203,7 @@ mod tests {
                         score: 0.9,
                     }
                 })
-                .collect()
+                .collect())
         }
     }
 
@@ -201,7 +226,7 @@ mod tests {
             DynamicImage::ImageRgb8(RgbImage::from_pixel(40, 30, Rgb([255, 0, 0]))),
             DynamicImage::ImageRgb8(RgbImage::from_pixel(40, 30, Rgb([0, 255, 0]))),
         ];
-        let results = pipeline.forward(&images);
+        let results = pipeline.forward(&images).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
         assert_eq!(results[0][0].recognition.text, "red left");
@@ -213,15 +238,15 @@ mod tests {
 
     struct EmptyDetector;
     impl Det for EmptyDetector {
-        fn forward(&self, images: &[RgbImage]) -> Vec<Vec<Detection>> {
-            vec![Vec::new(); images.len()]
+        fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
+            Ok(vec![Vec::new(); images.len()])
         }
     }
     struct CountingRecognizer(Rc<Cell<usize>>);
     impl Rec for CountingRecognizer {
-        fn forward(&self, _: &[RgbImage]) -> Vec<Recognition> {
+        fn forward(&self, _: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
             self.0.set(self.0.get() + 1);
-            Vec::new()
+            Ok(Vec::new())
         }
     }
 
@@ -232,27 +257,43 @@ mod tests {
             Box::new(EmptyDetector),
             Box::new(CountingRecognizer(calls.clone())),
         );
-        let results = pipeline.forward(&[
-            DynamicImage::new_rgb8(10, 10),
-            DynamicImage::new_rgb8(10, 10),
-        ]);
+        let results = pipeline
+            .forward(&[
+                DynamicImage::new_rgb8(10, 10),
+                DynamicImage::new_rgb8(10, 10),
+            ])
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(Vec::is_empty));
-        assert!(pipeline.forward(&[]).is_empty());
-        let results =
-            pipeline.forward(&[DynamicImage::new_rgb8(0, 0), DynamicImage::new_rgb8(0, 0)]);
+        assert!(pipeline.forward(&[]).unwrap().is_empty());
+        let results = pipeline
+            .forward(&[DynamicImage::new_rgb8(0, 0), DynamicImage::new_rgb8(0, 0)])
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(Vec::is_empty));
         assert_eq!(calls.get(), 0);
     }
     #[test]
-    #[should_panic(expected = "OCR images must have the same dimensions")]
+    #[should_panic(expected = "detector must return one result list per image")]
+    fn invalid_detector_result_count_remains_an_invariant_failure() {
+        struct BrokenDetector;
+        impl Det for BrokenDetector {
+            fn forward(&self, _: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
+                Ok(Vec::new())
+            }
+        }
+        let pipeline = OcrPipeline::new(Box::new(BrokenDetector), Box::new(Recognizer));
+        let _ = pipeline.forward(&[DynamicImage::new_rgb8(40, 30)]);
+    }
+
+    #[test]
     fn batches_require_equal_image_dimensions() {
         let pipeline = OcrPipeline::new(Box::new(Detector), Box::new(Recognizer));
-        pipeline.forward(&[
+        let result = pipeline.forward(&[
             DynamicImage::new_rgb8(40, 30),
             DynamicImage::new_rgb8(80, 60),
         ]);
+        assert!(result.is_err());
     }
 
     #[test]

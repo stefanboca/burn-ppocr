@@ -1,3 +1,4 @@
+use anyhow::{Context, ensure};
 use burn::prelude::*;
 use image::RgbImage;
 
@@ -13,36 +14,26 @@ pub struct CtcRecognizer {
 }
 
 impl CtcRecognizer {
-    fn decode(&self, predictions: Tensor<3>) -> Vec<Recognition> {
-        let [batch, timesteps, classes] = predictions.dims();
+    fn decode(&self, predictions: Tensor<3>) -> anyhow::Result<Vec<Recognition>> {
+        let [_, timesteps, classes] = predictions.dims();
         assert_eq!(
             classes,
             self.characters.len(),
             "recognizer and dictionary class counts differ"
         );
-        if timesteps == 0 {
-            return (0..batch)
-                .map(|_| Recognition {
-                    text: String::new(),
-                    score: 0.0,
-                })
-                .collect();
-        }
         // The exported recognizer already includes softmax. Reduce before CPU transfer.
         let (scores, indices) = predictions.max_dim_with_indices(2);
         let scores = scores
-            .into_data()
             .try_into_vec_as::<f32>()
-            .expect("recognition scores must be convertible to f32");
+            .context("reading recognition scores")?;
         let indices = indices
-            .into_data()
             .try_into_vec_as::<i64>()
-            .expect("recognition indices must be convertible to i64");
-        indices
+            .context("reading recognition indices")?;
+        Ok(indices
             .chunks_exact(timesteps)
             .zip(scores.chunks_exact(timesteps))
             .map(|(indices, scores)| self.decode_tokens(indices, scores))
-            .collect()
+            .collect())
     }
 
     fn decode_tokens(&self, indices: &[i64], scores: &[f32]) -> Recognition {
@@ -71,8 +62,8 @@ impl CtcRecognizer {
 }
 
 impl Rec for CtcRecognizer {
-    fn forward(&self, crops: &[RgbImage]) -> Vec<Recognition> {
-        assert!(
+    fn forward(&self, crops: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
+        ensure!(
             crops
                 .iter()
                 .all(|crop| crop.width() > 0 && crop.height() > 0),
@@ -97,20 +88,21 @@ impl Rec for CtcRecognizer {
                 batch.len(),
                 "recognizer batch size mismatch"
             );
-            for (&index, result) in batch.iter().zip(self.decode(predictions)) {
+            for (&index, result) in batch.iter().zip(self.decode(predictions)?) {
                 results[index] = Some(result);
             }
         }
-        results
+        Ok(results
             .into_iter()
             .map(|result| result.expect("missing recognition result"))
-            .collect()
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::num::NonZeroU32;
     use std::rc::Rc;
 
     use image::Rgb;
@@ -125,12 +117,17 @@ mod tests {
             model: Box::new(ColorRecognizer(Rc::new(RefCell::new(Vec::new())))),
             device: Device::flex(),
             preprocess: RecPreProcess {
-                height: 48,
-                width: 320,
+                height: NonZeroU32::new(48).unwrap(),
+                width: NonZeroU32::new(320).unwrap(),
             },
             characters,
             batch_size: 6,
         }
+    }
+
+    #[test]
+    fn empty_crops_return_an_error() {
+        assert!(recognizer("a\n").forward(&[RgbImage::new(0, 1)]).is_err());
     }
 
     #[test]
@@ -165,7 +162,7 @@ mod tests {
             ]],
             &device,
         );
-        let result = decoder.decode(predictions);
+        let result = decoder.decode(predictions).unwrap();
         assert_eq!(result[0].text, "aa");
         assert!((result[0].score - 0.75).abs() < 1e-6);
     }
@@ -173,7 +170,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "recognizer and dictionary class counts differ")]
     fn dictionary_size_must_match_model() {
-        recognizer("a\n").decode(Tensor::zeros([1, 1, 2], &Device::flex()));
+        let _ = recognizer("a\n").decode(Tensor::zeros([1, 1, 2], &Device::flex()));
     }
 
     #[test]
@@ -222,7 +219,7 @@ mod tests {
                 )
             })
             .collect();
-        let result = recognizer.forward(&crops);
+        let result = recognizer.forward(&crops).unwrap();
         assert_eq!(
             result
                 .iter()
@@ -231,7 +228,7 @@ mod tests {
             ["a", "b", "a", "b", "a", "b", "a"]
         );
         assert_eq!(*calls.borrow(), [[6, 3, 48, 768], [1, 3, 48, 960]]);
-        assert!(recognizer.forward(&[]).is_empty());
+        assert!(recognizer.forward(&[]).unwrap().is_empty());
         assert_eq!(calls.borrow().len(), 2);
     }
 }

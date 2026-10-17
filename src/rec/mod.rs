@@ -8,7 +8,7 @@ use image::RgbImage;
 /// A recognizer including orientation, normalization, batching, and decoding.
 /// Results must correspond to the crops in their original order.
 pub trait Rec {
-    fn forward(&self, crops: &[RgbImage]) -> Vec<Recognition>;
+    fn forward(&self, crops: &[RgbImage]) -> anyhow::Result<Vec<Recognition>>;
 }
 
 /// The tensor interface implemented by generated recognition models.

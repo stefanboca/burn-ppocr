@@ -28,6 +28,8 @@ mod det_model {
 }
 
 mod rec_model {
+    use std::num::NonZeroU32;
+
     use crate::rec::preprocess::RecPreProcess;
     use crate::rec::{CtcRecognizer, RecModel};
 
@@ -52,8 +54,8 @@ mod rec_model {
                 model: Box::new(Model::from_file(WEIGHTS_FILE, &device)),
                 device,
                 preprocess: RecPreProcess {
-                    height: 48,
-                    width: 320,
+                    height: NonZeroU32::new(48).unwrap(),
+                    width: NonZeroU32::new(320).unwrap(),
                 },
                 characters,
                 batch_size: 6,

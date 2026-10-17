@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use burn::prelude::*;
 use image::{RgbImage, imageops};
 
@@ -6,15 +8,14 @@ pub struct DetPreProcess {
 }
 
 impl DetPreProcess {
-    pub fn forward(&self, images: &[RgbImage], device: &Device) -> Tensor<4> {
-        let image = images.first().expect("detector batch must be nonempty");
-        assert!(
-            images
-                .iter()
-                .all(|other| other.dimensions() == image.dimensions()),
-            "detector images must have the same dimensions"
-        );
-        let (width, height) = self.resize_shape(image.width(), image.height());
+    /// Images share the validated source shape, ordered `(height, width)`.
+    pub fn forward(
+        &self,
+        images: &[RgbImage],
+        src_shape: (NonZeroUsize, NonZeroUsize),
+        device: &Device,
+    ) -> Tensor<4> {
+        let (width, height) = self.resize_shape(src_shape);
         let pixels: Vec<_> = images
             .iter()
             .flat_map(|image| {
@@ -33,10 +34,10 @@ impl DetPreProcess {
         (image / 255.0 - mean) / std
     }
 
-    fn resize_shape(&self, width: u32, height: u32) -> (u32, u32) {
-        let ratio = (self.max_side as f64 / width.max(height) as f64).min(1.0);
-        let align = |length: u32| {
-            let resized = (length as f64 * ratio) as u32;
+    fn resize_shape(&self, (height, width): (NonZeroUsize, NonZeroUsize)) -> (u32, u32) {
+        let ratio = (self.max_side as f64 / width.max(height).get() as f64).min(1.0);
+        let align = |length: NonZeroUsize| {
+            let resized = (length.get() as f64 * ratio) as u32;
             ((resized as f64 / 32.0).round_ties_even() as u32 * 32).max(32)
         };
         (align(width), align(height))
@@ -55,7 +56,11 @@ mod tests {
             RgbImage::from_pixel(32, 32, Rgb([255, 128, 0])),
             RgbImage::from_pixel(32, 32, Rgb([0, 64, 255])),
         ];
-        let input = DetPreProcess { max_side: 960 }.forward(&images, &Device::flex());
+        let src_shape = (
+            NonZeroUsize::new(32).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        );
+        let input = DetPreProcess { max_side: 960 }.forward(&images, src_shape, &Device::flex());
         assert_eq!(input.dims(), [2, 3, 32, 32]);
         let data = input.into_data().try_into_vec_as::<f32>().unwrap();
         assert!((data[0] - (0.0 - 0.485) / 0.229).abs() < 1e-5);
