@@ -14,6 +14,6 @@ branches = { version = "0.4", default-features = false, features = ["std"] }
 burn-onnx = "0.22.0"
 
 [features]
-default = ["pp_ocrv6_tiny_det", "pp_ocrv6_tiny_rec"]
+# default = ["pp_ocrv6_tiny_det", "pp_ocrv6_tiny_rec"]
 pp_ocrv6_tiny_det = []
 pp_ocrv6_tiny_rec = []
