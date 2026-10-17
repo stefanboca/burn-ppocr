@@ -2,7 +2,7 @@
 # streaming.logger = { level = "basic", stdout = true }  # disabled, minimal, full
 
 [autotune]
-level = "minimal"  # minimal, balanced, extensive, full
+level = "full"  # minimal, balanced, extensive, full
 # logger = { level = "minimal", stdout = true }  # disabled, minimal, full
 
 [compilation]
