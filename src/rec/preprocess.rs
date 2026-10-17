@@ -4,6 +4,7 @@ use burn::prelude::*;
 use burn::tensor::ops::PadMode;
 use image::{RgbImage, imageops};
 
+#[derive(Clone, Debug)]
 pub struct RecPreProcess {
     pub height: NonZeroU32,
     pub width: NonZeroU32,

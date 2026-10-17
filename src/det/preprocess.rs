@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 use burn::prelude::*;
 use image::{RgbImage, imageops};
 
+#[derive(Clone, Debug)]
 pub struct DetPreProcess {
     pub max_side: u32,
 }

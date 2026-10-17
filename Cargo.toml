@@ -23,6 +23,7 @@ burn-onnx = "0.22.0"
 
 [features]
 default = []
+embed = []
 pp_ocrv6_medium = []
 pp_ocrv6_small = []
 pp_ocrv6_tiny = []

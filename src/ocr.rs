@@ -1,4 +1,6 @@
 use anyhow::ensure;
+use burn::module::Module;
+use burn::tensor::Device;
 use image::{DynamicImage, GenericImageView, RgbImage};
 use imageproc::geometric_transformations::{Border, Interpolation, Projection, warp_into};
 
@@ -13,44 +15,26 @@ pub struct OcrResult {
 }
 
 /// Coordinates image detection, rectification, and recognition.
-/// Models own their device, preprocessing, batching, and decoding policies.
-pub struct OcrPipeline {
-    det: Box<dyn Det>,
-    rec: Box<dyn Rec>,
+/// Models own preprocessing, batching, and decoding policies.
+#[derive(Module, Debug)]
+pub struct OcrPipeline<D: Det, R: Rec> {
+    pub det: D,
+    pub rec: R,
 }
 
-impl OcrPipeline {
-    pub fn new(det: Box<dyn Det>, rec: Box<dyn Rec>) -> Self {
+impl<D: Det, R: Rec> OcrPipeline<D, R> {
+    pub fn new(det: D, rec: R) -> Self {
         Self { det, rec }
     }
 
-    #[cfg(feature = "pp_ocrv6_tiny")]
-    pub fn pp_ocrv6_tiny(device: burn::tensor::Device) -> Self {
-        Self::new(
-            Box::new(crate::DbDetector::pp_ocrv6_tiny(device.clone())),
-            Box::new(crate::CtcRecognizer::pp_ocrv6_tiny(device)),
-        )
-    }
-
-    #[cfg(feature = "pp_ocrv6_small")]
-    pub fn pp_ocrv6_small(device: burn::tensor::Device) -> Self {
-        Self::new(
-            Box::new(crate::DbDetector::pp_ocrv6_small(device.clone())),
-            Box::new(crate::CtcRecognizer::pp_ocrv6_small(device)),
-        )
-    }
-
-    #[cfg(feature = "pp_ocrv6_medium")]
-    pub fn pp_ocrv6_medium(device: burn::tensor::Device) -> Self {
-        Self::new(
-            Box::new(crate::DbDetector::pp_ocrv6_medium(device.clone())),
-            Box::new(crate::CtcRecognizer::pp_ocrv6_medium(device)),
-        )
-    }
-
     /// Recognize a batch of equally sized images, returning results in input order.
+    /// Preprocessing creates tensors on `device`, which must match the models' device.
     /// Returns an error when image dimensions differ within the batch.
-    pub fn forward(&self, images: &[DynamicImage]) -> anyhow::Result<Vec<Vec<OcrResult>>> {
+    pub fn forward(
+        &self,
+        images: &[DynamicImage],
+        device: &Device,
+    ) -> anyhow::Result<Vec<Vec<OcrResult>>> {
         let Some(image) = images.first() else {
             return Ok(Vec::new());
         };
@@ -71,7 +55,7 @@ impl OcrPipeline {
             return Ok(results);
         }
         let images: Vec<_> = images.iter().map(DynamicImage::to_rgb8).collect();
-        let detections = self.det.forward(&images)?;
+        let detections = self.det.forward(&images, device)?;
         assert_eq!(
             detections.len(),
             images.len(),
@@ -92,7 +76,7 @@ impl OcrPipeline {
         if crops.is_empty() {
             return Ok(results);
         }
-        let recognitions = self.rec.forward(&crops)?;
+        let recognitions = self.rec.forward(&crops, device)?;
         assert_eq!(
             recognitions.len(),
             regions.len(),

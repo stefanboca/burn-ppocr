@@ -9,9 +9,10 @@ use super::preprocess::DetPreProcess;
 use super::{Det, DetModel, Detection};
 use crate::geometry::{Point, Polygon};
 
-pub struct DbDetector {
-    pub model: Box<dyn DetModel>,
-    pub device: Device,
+#[derive(Module, Debug)]
+pub struct DbDetector<M: DetModel> {
+    pub model: M,
+    #[module(skip)]
     pub preprocess: DetPreProcess,
     pub thresh: f32,
     pub box_thresh: f32,
@@ -19,7 +20,7 @@ pub struct DbDetector {
     pub unclip_ratio: f32,
 }
 
-impl DbDetector {
+impl<M: DetModel> DbDetector<M> {
     fn postprocess(
         &self,
         maps: Tensor<3>,
@@ -85,8 +86,8 @@ impl DbDetector {
     }
 }
 
-impl Det for DbDetector {
-    fn forward(&self, images: &[RgbImage]) -> anyhow::Result<Vec<Vec<Detection>>> {
+impl<M: DetModel> Det for DbDetector<M> {
+    fn forward(&self, images: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Vec<Detection>>> {
         let Some(image) = images.first() else {
             return Ok(Vec::new());
         };
@@ -101,7 +102,7 @@ impl Det for DbDetector {
         else {
             return Ok(vec![Vec::new(); images.len()]);
         };
-        let input = self.preprocess.forward(images, src_shape, &self.device);
+        let input = self.preprocess.forward(images, src_shape, device);
         let maps = self.model.forward(input);
         assert_eq!(maps.dims()[0], images.len(), "detector batch size mismatch");
         let channels = maps.dims()[1];

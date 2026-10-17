@@ -1,9 +1,10 @@
-mod det_model {
+pub mod det_model {
     use crate::det::preprocess::DetPreProcess;
     use crate::det::{DbDetector, DetModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/det.rs"));
 
+    #[cfg(not(feature = "embed"))]
     const WEIGHTS_FILE: &str = concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/det.bpk");
 
     impl DetModel for Model {
@@ -12,11 +13,14 @@ mod det_model {
         }
     }
 
-    impl DbDetector {
+    impl DbDetector<Model> {
         pub fn pp_ocrv6_small(device: Device) -> Self {
+            #[cfg(feature = "embed")]
+            let model = Model::from_embedded(&device);
+            #[cfg(not(feature = "embed"))]
+            let model = Model::from_file(WEIGHTS_FILE, &device);
             Self {
-                model: Box::new(Model::from_file(WEIGHTS_FILE, &device)),
-                device,
+                model,
                 preprocess: DetPreProcess { max_side: 960 },
                 thresh: 0.2,
                 box_thresh: 0.45,
@@ -27,7 +31,7 @@ mod det_model {
     }
 }
 
-mod rec_model {
+pub mod rec_model {
     use std::num::NonZeroU32;
 
     use crate::rec::preprocess::RecPreProcess;
@@ -35,6 +39,7 @@ mod rec_model {
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/rec.rs"));
 
+    #[cfg(not(feature = "embed"))]
     const WEIGHTS_FILE: &str = concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/rec.bpk");
     const DICTIONARY: &str = include_str!("../../models/pp_ocrv6_small/dict.txt");
 
@@ -44,15 +49,18 @@ mod rec_model {
         }
     }
 
-    impl CtcRecognizer {
+    impl CtcRecognizer<Model> {
         pub fn pp_ocrv6_small(device: Device) -> Self {
+            #[cfg(feature = "embed")]
+            let model = Model::from_embedded(&device);
+            #[cfg(not(feature = "embed"))]
+            let model = Model::from_file(WEIGHTS_FILE, &device);
             // The dictionary excludes the CTC blank and trailing space.
             let mut characters = vec![String::new()];
             characters.extend(DICTIONARY.lines().map(str::to_owned));
             characters.push(" ".to_owned());
             Self {
-                model: Box::new(Model::from_file(WEIGHTS_FILE, &device)),
-                device,
+                model,
                 preprocess: RecPreProcess {
                     height: NonZeroU32::new(48).unwrap(),
                     width: NonZeroU32::new(320).unwrap(),
@@ -61,5 +69,16 @@ mod rec_model {
                 batch_size: Self::DEFAULT_BATCH_SIZE,
             }
         }
+    }
+}
+
+impl
+    crate::OcrPipeline<crate::DbDetector<det_model::Model>, crate::CtcRecognizer<rec_model::Model>>
+{
+    pub fn pp_ocrv6_small(device: burn::tensor::Device) -> Self {
+        Self::new(
+            crate::DbDetector::pp_ocrv6_small(device.clone()),
+            crate::CtcRecognizer::pp_ocrv6_small(device),
+        )
     }
 }

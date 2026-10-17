@@ -5,15 +5,17 @@ use image::RgbImage;
 use super::preprocess::{RecPreProcess, orient_crop};
 use super::{Rec, RecModel, Recognition};
 
-pub struct CtcRecognizer {
-    pub model: Box<dyn RecModel>,
-    pub device: Device,
+#[derive(Module, Debug)]
+pub struct CtcRecognizer<M: RecModel> {
+    pub model: M,
+    #[module(skip)]
     pub preprocess: RecPreProcess,
+    #[module(skip)]
     pub characters: Vec<String>,
     pub batch_size: usize,
 }
 
-impl CtcRecognizer {
+impl<M: RecModel> CtcRecognizer<M> {
     /// Upstream's default batching policy, independent of the recognition model.
     pub const DEFAULT_BATCH_SIZE: usize = 6;
 
@@ -64,8 +66,8 @@ impl CtcRecognizer {
     }
 }
 
-impl Rec for CtcRecognizer {
-    fn forward(&self, crops: &[RgbImage]) -> anyhow::Result<Vec<Recognition>> {
+impl<M: RecModel> Rec for CtcRecognizer<M> {
+    fn forward(&self, crops: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Recognition>> {
         ensure!(
             crops
                 .iter()
@@ -83,7 +85,7 @@ impl Rec for CtcRecognizer {
             let width = self.preprocess.batch_width(&images);
             let images = images
                 .into_iter()
-                .map(|image| self.preprocess.forward(image, width, &self.device))
+                .map(|image| self.preprocess.forward(image, width, device))
                 .collect();
             let predictions = self.model.forward(Tensor::stack::<4>(images, 0));
             assert_eq!(
