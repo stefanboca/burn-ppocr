@@ -10,6 +10,10 @@ pub struct DetPreProcess {
 
 impl DetPreProcess {
     /// Images share the validated source shape, ordered `(height, width)`.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "det.preprocess")
+    )]
     pub fn forward(
         &self,
         images: &[RgbImage],
@@ -17,19 +21,31 @@ impl DetPreProcess {
         device: &Device,
     ) -> Tensor<4> {
         let (width, height) = self.resize_shape(src_shape);
-        let pixels: Vec<_> = images
-            .iter()
-            .flat_map(|image| {
-                imageops::resize(image, width, height, imageops::FilterType::Triangle).into_raw()
-            })
-            .collect();
-        let image = Tensor::<4>::from_data(
+        let pixels: Vec<_> = {
+            #[cfg(feature = "profiling")]
+            let _span = tracing::info_span!("det.resize").entered();
+            images
+                .iter()
+                .flat_map(|image| {
+                    imageops::resize(image, width, height, imageops::FilterType::Triangle)
+                        .into_raw()
+                })
+                .collect()
+        };
+        let data = {
+            #[cfg(feature = "profiling")]
+            let _span = tracing::info_span!("det.convert_pixels").entered();
             TensorData::new(pixels, [images.len(), height as usize, width as usize, 3])
-                .convert::<f32>(),
-            device,
-        )
-        .permute([0, 3, 1, 2])
-        .flip([1]);
+                .convert::<f32>()
+        };
+        let image = {
+            #[cfg(feature = "profiling")]
+            let _span = tracing::info_span!("det.upload").entered();
+            Tensor::<4>::from_data(data, device)
+        };
+        #[cfg(feature = "profiling")]
+        let _span = tracing::info_span!("det.normalize").entered();
+        let image = image.permute([0, 3, 1, 2]).flip([1]);
         let mean = Tensor::<1>::from_data([0.485f32, 0.456, 0.406], device).reshape([1, 3, 1, 1]);
         let std = Tensor::<1>::from_data([0.229f32, 0.224, 0.225], device).reshape([1, 3, 1, 1]);
         (image / 255.0 - mean) / std

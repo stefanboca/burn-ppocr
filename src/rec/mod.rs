@@ -1,16 +1,11 @@
 pub mod ctc;
+pub mod decode;
 pub mod preprocess;
 
 use burn::module::{Module, ModuleDisplay};
-use burn::tensor::{Device, Tensor};
+use burn::tensor::Tensor;
 pub use ctc::CtcRecognizer;
-use image::RgbImage;
-
-/// A recognizer including orientation, normalization, batching, and decoding.
-/// Results must correspond to the crops in their original order.
-pub trait Rec: Module + ModuleDisplay {
-    fn forward(&self, crops: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Recognition>>;
-}
+pub use decode::CtcDecoder;
 
 /// The tensor interface implemented by generated recognition models.
 pub trait RecModel: Module + ModuleDisplay {

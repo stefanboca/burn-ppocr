@@ -21,6 +21,10 @@ impl RecPreProcess {
             .max(self.width)
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "rec.preprocess")
+    )]
     pub fn forward(&self, crop: &RgbImage, batch_width: NonZeroU32, device: &Device) -> Tensor<3> {
         let batch_width = batch_width.get();
         let height = self.height.get();

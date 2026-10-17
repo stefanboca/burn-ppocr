@@ -1,6 +1,6 @@
 pub mod det_model {
     use crate::det::preprocess::DetPreProcess;
-    use crate::det::{DbDetector, DetModel};
+    use crate::det::{DbDetector, DbPostProcess, DetModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/det.rs"));
 
@@ -22,10 +22,12 @@ pub mod det_model {
             Self {
                 model,
                 preprocess: DetPreProcess { max_side: 960 },
-                thresh: 0.2,
-                box_thresh: 0.45,
-                max_candidates: 3000,
-                unclip_ratio: 1.4,
+                postprocess: DbPostProcess {
+                    thresh: 0.2,
+                    box_thresh: 0.45,
+                    max_candidates: 3000,
+                    unclip_ratio: 1.4,
+                },
             }
         }
     }
@@ -35,7 +37,7 @@ pub mod rec_model {
     use std::num::NonZeroU32;
 
     use crate::rec::preprocess::RecPreProcess;
-    use crate::rec::{CtcRecognizer, RecModel};
+    use crate::rec::{CtcDecoder, CtcRecognizer, RecModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_small/rec.rs"));
 
@@ -65,16 +67,14 @@ pub mod rec_model {
                     height: NonZeroU32::new(48).unwrap(),
                     width: NonZeroU32::new(320).unwrap(),
                 },
-                characters,
+                decoder: CtcDecoder { characters },
                 batch_size: Self::DEFAULT_BATCH_SIZE,
             }
         }
     }
 }
 
-impl
-    crate::OcrPipeline<crate::DbDetector<det_model::Model>, crate::CtcRecognizer<rec_model::Model>>
-{
+impl crate::OcrPipeline<det_model::Model, rec_model::Model> {
     pub fn pp_ocrv6_small(device: burn::tensor::Device) -> Self {
         Self::new(
             crate::DbDetector::pp_ocrv6_small(device.clone()),

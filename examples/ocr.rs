@@ -1,5 +1,3 @@
-use std::hint::black_box;
-
 use burn::module::{Module, ModuleMapper, Param};
 use burn::tensor::{Device, DeviceConfig, FloatDType, Tensor};
 use burn_ppocr::OcrPipeline;
@@ -39,22 +37,6 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
-
-    for _ in 0..10 {
-        let _ = black_box(pipeline.forward(&images, &device));
-    }
-    device.sync()?;
-
-    let mut total = std::time::Duration::ZERO;
-    for _ in 0..10 {
-        let start = std::time::Instant::now();
-        let _ = black_box(pipeline.forward(&images, &device));
-        device.sync()?;
-        let elapsed = start.elapsed();
-        dbg!(start.elapsed());
-        total += elapsed;
-    }
-    dbg!(total / 10);
 
     Ok(())
 }

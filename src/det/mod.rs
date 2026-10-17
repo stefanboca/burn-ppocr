@@ -1,18 +1,13 @@
 pub mod db;
+pub mod postprocess;
 pub mod preprocess;
 
 use burn::module::{Module, ModuleDisplay};
-use burn::tensor::{Device, Tensor};
+use burn::tensor::Tensor;
 pub use db::DbDetector;
-use image::RgbImage;
+pub use postprocess::DbPostProcess;
 
 use crate::geometry::Polygon;
-
-/// A detector including its model-specific input and output processing.
-/// All images in a batch must have the same dimensions. Results follow input order.
-pub trait Det: Module + ModuleDisplay {
-    fn forward(&self, images: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Vec<Detection>>>;
-}
 
 /// The tensor interface implemented by generated detection models.
 pub trait DetModel: Module + ModuleDisplay {

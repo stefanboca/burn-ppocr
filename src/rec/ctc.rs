@@ -1,9 +1,9 @@
-use anyhow::{Context, ensure};
+use anyhow::ensure;
 use burn::prelude::*;
 use image::RgbImage;
 
 use super::preprocess::{RecPreProcess, orient_crop};
-use super::{Rec, RecModel, Recognition};
+use super::{CtcDecoder, RecModel, Recognition};
 
 #[derive(Module, Debug)]
 pub struct CtcRecognizer<M: RecModel> {
@@ -11,7 +11,7 @@ pub struct CtcRecognizer<M: RecModel> {
     #[module(skip)]
     pub preprocess: RecPreProcess,
     #[module(skip)]
-    pub characters: Vec<String>,
+    pub decoder: CtcDecoder,
     pub batch_size: usize,
 }
 
@@ -19,55 +19,11 @@ impl<M: RecModel> CtcRecognizer<M> {
     /// Upstream's default batching policy, independent of the recognition model.
     pub const DEFAULT_BATCH_SIZE: usize = 6;
 
-    fn decode(&self, predictions: Tensor<3>) -> anyhow::Result<Vec<Recognition>> {
-        let [_, timesteps, classes] = predictions.dims();
-        assert_eq!(
-            classes,
-            self.characters.len(),
-            "recognizer and dictionary class counts differ"
-        );
-        // The exported recognizer already includes softmax. Reduce before CPU transfer.
-        let (scores, indices) = predictions.max_dim_with_indices(2);
-        let scores = scores
-            .try_into_vec_as::<f32>()
-            .context("reading recognition scores")?;
-        let indices = indices
-            .try_into_vec_as::<i64>()
-            .context("reading recognition indices")?;
-        Ok(indices
-            .chunks_exact(timesteps)
-            .zip(scores.chunks_exact(timesteps))
-            .map(|(indices, scores)| self.decode_tokens(indices, scores))
-            .collect())
-    }
-
-    fn decode_tokens(&self, indices: &[i64], scores: &[f32]) -> Recognition {
-        let mut text = String::new();
-        let mut sum = 0.0;
-        let mut count = 0;
-        let mut previous = 0;
-        for (&index, &score) in indices.iter().zip(scores) {
-            assert!(score.is_finite(), "recognizer returned a nonfinite score");
-            if index != 0 && index != previous {
-                let token = self
-                    .characters
-                    .get(index as usize)
-                    .expect("recognizer returned an invalid class index");
-                text.push_str(token);
-                sum += score;
-                count += 1;
-            }
-            previous = index;
-        }
-        Recognition {
-            text,
-            score: if count == 0 { 0.0 } else { sum / count as f32 },
-        }
-    }
-}
-
-impl<M: RecModel> Rec for CtcRecognizer<M> {
-    fn forward(&self, crops: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Recognition>> {
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "rec.forward")
+    )]
+    pub fn forward(&self, crops: &[RgbImage], device: &Device) -> anyhow::Result<Vec<Recognition>> {
         ensure!(
             crops
                 .iter()
@@ -87,13 +43,18 @@ impl<M: RecModel> Rec for CtcRecognizer<M> {
                 .into_iter()
                 .map(|image| self.preprocess.forward(image, width, device))
                 .collect();
-            let predictions = self.model.forward(Tensor::stack::<4>(images, 0));
+            let input = Tensor::stack::<4>(images, 0);
+            let predictions = {
+                #[cfg(feature = "profiling")]
+                let _span = tracing::info_span!("rec.model").entered();
+                self.model.forward(input)
+            };
             assert_eq!(
                 predictions.dims()[0],
                 batch.len(),
                 "recognizer batch size mismatch"
             );
-            for (&index, result) in batch.iter().zip(self.decode(predictions)?) {
+            for (&index, result) in batch.iter().zip(self.decoder.decode(predictions)?) {
                 results[index] = Some(result);
             }
         }

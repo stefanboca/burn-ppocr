@@ -23,6 +23,7 @@ impl Polygon {
     }
 
     /// Offset the closed polygon by `distance`, using round joins.
+    #[cfg_attr(feature = "profiling", tracing::instrument(skip_all, level = "trace"))]
     pub fn offset(&self, distance: f32) -> Vec<Self> {
         if self.0.len() < 3 || !distance.is_finite() {
             return Vec::new();

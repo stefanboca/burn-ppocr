@@ -1,9 +1,9 @@
 pub mod det;
 pub mod geometry;
 pub mod models;
-mod ocr;
+pub mod ocr;
 pub mod rec;
 
-pub use det::{DbDetector, Det, Detection};
+pub use det::{DbDetector, Detection};
 pub use ocr::{OcrPipeline, OcrResult};
-pub use rec::{CtcRecognizer, Rec, Recognition};
+pub use rec::{CtcRecognizer, Recognition};

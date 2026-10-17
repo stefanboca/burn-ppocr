@@ -4,8 +4,10 @@ use burn::tensor::Device;
 use image::{DynamicImage, GenericImageView, RgbImage};
 use imageproc::geometric_transformations::{Border, Interpolation, Projection, warp_into};
 
+use crate::det::DetModel;
 use crate::geometry::{Point, Polygon};
-use crate::{Det, Detection, Rec, Recognition};
+use crate::rec::RecModel;
+use crate::{CtcRecognizer, DbDetector, Detection, Recognition};
 
 /// A text region in source-image coordinates, with detection and recognition scores.
 #[derive(Debug)]
@@ -15,21 +17,25 @@ pub struct OcrResult {
 }
 
 /// Coordinates image detection, rectification, and recognition.
-/// Models own preprocessing, batching, and decoding policies.
+/// The detector and recognizer own preprocessing, batching, and decoding policies.
 #[derive(Module, Debug)]
-pub struct OcrPipeline<D: Det, R: Rec> {
-    pub det: D,
-    pub rec: R,
+pub struct OcrPipeline<D: DetModel, R: RecModel> {
+    pub det: DbDetector<D>,
+    pub rec: CtcRecognizer<R>,
 }
 
-impl<D: Det, R: Rec> OcrPipeline<D, R> {
-    pub fn new(det: D, rec: R) -> Self {
+impl<D: DetModel, R: RecModel> OcrPipeline<D, R> {
+    pub fn new(det: DbDetector<D>, rec: CtcRecognizer<R>) -> Self {
         Self { det, rec }
     }
 
     /// Recognize a batch of equally sized images, returning results in input order.
     /// Preprocessing creates tensors on `device`, which must match the models' device.
     /// Returns an error when image dimensions differ within the batch.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "ocr.forward")
+    )]
     pub fn forward(
         &self,
         images: &[DynamicImage],
@@ -93,6 +99,7 @@ impl<D: Det, R: Rec> OcrPipeline<D, R> {
 }
 
 /// Rectify the four ordered corners without applying model-specific orientation rules.
+#[cfg_attr(feature = "profiling", tracing::instrument(skip_all))]
 pub fn crop_text(image: &RgbImage, polygon: &Polygon) -> Option<RgbImage> {
     if image.width() == 0 || image.height() == 0 {
         return None;
@@ -131,7 +138,8 @@ pub fn crop_text(image: &RgbImage, polygon: &Polygon) -> Option<RgbImage> {
 }
 
 /// PaddleOCR's top-to-bottom sort, followed by left-to-right ordering within 10 pixels.
-fn sort_reading_order(detections: &mut [Detection]) {
+#[cfg_attr(feature = "profiling", tracing::instrument(skip_all))]
+pub fn sort_reading_order(detections: &mut [Detection]) {
     detections.sort_by(|a, b| {
         let a = a.points.0[0];
         let b = b.points.0[0];
