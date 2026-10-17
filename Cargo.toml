@@ -1,0 +1,14 @@
+[package]
+name = "burn-ppocr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+burn = { version = "0.22.0", features = ["cuda", "flex", "vulkan"] }
+burn-store = "0.22.0"
+
+# Match Turso's branches 0.4 dependency and enable std to avoid a removed nightly abort intrinsic.
+branches = { version = "0.4", default-features = false, features = ["std"] }
+
+[build-dependencies]
+burn-onnx = "0.22.0"
