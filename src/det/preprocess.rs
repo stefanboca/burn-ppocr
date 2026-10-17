@@ -1,15 +1,42 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use burn::prelude::*;
-use image::{RgbImage, imageops};
+use burn::tensor::DType;
+use burn::tensor::module::interpolate;
+use burn::tensor::ops::{InterpolateMode, InterpolateOptions};
+use image::RgbImage;
 
-#[derive(Clone, Debug)]
+#[derive(Config, Debug)]
+pub struct DetPreProcessConfig {
+    #[config(default = "NonZeroU32::new(960).unwrap()")]
+    pub max_side: NonZeroU32,
+    #[config(default = "[0.485, 0.456, 0.406]")]
+    pub mean: [f32; 3],
+    #[config(default = "[0.229, 0.224, 0.225]")]
+    pub std: [f32; 3],
+}
+
+impl DetPreProcessConfig {
+    pub fn init(&self, device: &Device) -> DetPreProcess {
+        DetPreProcess {
+            max_side: self.max_side,
+            mean: Tensor::<1>::from_data(self.mean, device).reshape([1, 3, 1, 1]),
+            std: Tensor::<1>::from_data(self.std, device).reshape([1, 3, 1, 1]),
+        }
+    }
+}
+
+#[derive(Module, Debug)]
 pub struct DetPreProcess {
-    pub max_side: u32,
+    #[module(skip)]
+    pub max_side: NonZeroU32,
+    pub mean: Tensor<4>,
+    pub std: Tensor<4>,
 }
 
 impl DetPreProcess {
     /// Images share the validated source shape, ordered `(height, width)`.
+    /// Accepts RGB images and returns normalized BGR tensors in NCHW layout.
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(skip_all, name = "det.preprocess")
@@ -18,41 +45,61 @@ impl DetPreProcess {
         &self,
         images: &[RgbImage],
         src_shape: (NonZeroUsize, NonZeroUsize),
-        device: &Device,
     ) -> Tensor<4> {
         let (width, height) = self.resize_shape(src_shape);
-        let pixels: Vec<_> = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("det.resize").entered();
-            images
-                .iter()
-                .flat_map(|image| {
-                    imageops::resize(image, width, height, imageops::FilterType::Triangle)
-                        .into_raw()
-                })
-                .collect()
-        };
-        let data = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("det.convert_pixels").entered();
-            TensorData::new(pixels, [images.len(), height as usize, width as usize, 3])
-                .convert::<f32>()
-        };
-        let image = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("det.upload").entered();
-            Tensor::<4>::from_data(data, device)
-        };
-        #[cfg(feature = "profiling")]
-        let _span = tracing::info_span!("det.normalize").entered();
-        let image = image.permute([0, 3, 1, 2]).flip([1]);
-        let mean = Tensor::<1>::from_data([0.485f32, 0.456, 0.406], device).reshape([1, 3, 1, 1]);
-        let std = Tensor::<1>::from_data([0.229f32, 0.224, 0.225], device).reshape([1, 3, 1, 1]);
-        (image / 255.0 - mean) / std
+        let input = self.upload(images, src_shape);
+        let image = self.resize(input, [height as usize, width as usize]);
+        self.normalize(image)
     }
 
-    fn resize_shape(&self, (height, width): (NonZeroUsize, NonZeroUsize)) -> (u32, u32) {
-        let ratio = (self.max_side as f64 / width.max(height).get() as f64).min(1.0);
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "det.upload")
+    )]
+    pub fn upload(
+        &self,
+        images: &[RgbImage],
+        shape: (NonZeroUsize, NonZeroUsize),
+    ) -> Tensor<4, Int> {
+        let device = self.mean.device();
+        let images = images
+            .iter()
+            .map(|image| {
+                Tensor::<3, Int>::from_data(
+                    TensorData::new(image.as_raw().clone(), [shape.0.get(), shape.1.get(), 3]),
+                    (&device, DType::U8),
+                )
+            })
+            .collect();
+        Tensor::stack(images, 0)
+    }
+
+    pub fn resize(&self, input: Tensor<4, Int>, shape: [usize; 2]) -> Tensor<4> {
+        let image = input.float().permute([0, 3, 1, 2]);
+        if image.dims()[2..] == shape {
+            return image;
+        }
+        // Half-pixel bilinear sampling; retain integer-valued source pixels.
+        interpolate(
+            image,
+            InterpolateOptions::new(InterpolateMode::Bilinear)
+                .with_align_corners(false)
+                .with_output_size(shape),
+        )
+        .round()
+    }
+
+    pub fn normalize(&self, image: Tensor<4>) -> Tensor<4> {
+        // Upstream applies these mean/std values to BGR, in their listed order.
+        (image.flip([1]) / 255.0 - self.mean.clone()) / self.std.clone()
+    }
+
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "det.resize_shape")
+    )]
+    pub fn resize_shape(&self, (height, width): (NonZeroUsize, NonZeroUsize)) -> (u32, u32) {
+        let ratio = (self.max_side.get() as f64 / width.max(height).get() as f64).min(1.0);
         let align = |length: NonZeroUsize| {
             let resized = (length.get() as f64 * ratio) as u32;
             ((resized as f64 / 32.0).round_ties_even() as u32 * 32).max(32)

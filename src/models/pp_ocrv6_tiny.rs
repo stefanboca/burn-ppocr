@@ -1,6 +1,14 @@
+use burn::tensor::Device;
+
+use crate::OcrProcessor;
+use crate::crop::TextCropperConfig;
+use crate::det::DbPostProcessConfig;
+use crate::det::preprocess::DetPreProcessConfig;
+use crate::rec::preprocess::RecPreProcessConfig;
+use crate::rec::{CtcDecoderConfig, RecBatcherConfig};
+
 pub mod det_model {
-    use crate::det::preprocess::DetPreProcess;
-    use crate::det::{DbDetector, DbPostProcess, DetModel};
+    use crate::det::DetModel;
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_tiny/det.rs"));
 
@@ -8,36 +16,27 @@ pub mod det_model {
     const WEIGHTS_FILE: &str = concat!(env!("OUT_DIR"), "/models/pp_ocrv6_tiny/det.bpk");
 
     impl DetModel for Model {
+        #[cfg_attr(
+            feature = "profiling",
+            tracing::instrument(skip_all, name = "det.model")
+        )]
         fn forward(&self, images: Tensor<4>) -> Tensor<4> {
             self.forward(images)
         }
     }
 
-    impl DbDetector<Model> {
-        pub fn pp_ocrv6_tiny(device: Device) -> Self {
-            #[cfg(feature = "embed")]
-            let model = Model::from_embedded(&device);
-            #[cfg(not(feature = "embed"))]
-            let model = Model::from_file(WEIGHTS_FILE, &device);
-            Self {
-                model,
-                preprocess: DetPreProcess { max_side: 960 },
-                postprocess: DbPostProcess {
-                    thresh: 0.2,
-                    box_thresh: 0.4,
-                    max_candidates: 3000,
-                    unclip_ratio: 1.4,
-                },
+    impl Model {
+        pub fn load(device: &Device) -> Self {
+            cfg_select! {
+                feature = "embed" => Self::from_embedded(device),
+                _ => Self::from_file(WEIGHTS_FILE, device),
             }
         }
     }
 }
 
 pub mod rec_model {
-    use std::num::NonZeroU32;
-
-    use crate::rec::preprocess::RecPreProcess;
-    use crate::rec::{CtcDecoder, CtcRecognizer, RecModel};
+    use crate::rec::{CtcDecoderConfig, RecModel};
 
     include!(concat!(env!("OUT_DIR"), "/models/pp_ocrv6_tiny/rec.rs"));
 
@@ -46,39 +45,47 @@ pub mod rec_model {
     const DICTIONARY: &str = include_str!("../../models/pp_ocrv6_tiny/dict.txt");
 
     impl RecModel for Model {
+        #[cfg_attr(
+            feature = "profiling",
+            tracing::instrument(skip_all, name = "rec.model")
+        )]
         fn forward(&self, images: Tensor<4>) -> Tensor<3> {
             self.forward(images)
         }
     }
 
-    impl CtcRecognizer<Model> {
-        pub fn pp_ocrv6_tiny(device: Device) -> Self {
-            #[cfg(feature = "embed")]
-            let model = Model::from_embedded(&device);
-            #[cfg(not(feature = "embed"))]
-            let model = Model::from_file(WEIGHTS_FILE, &device);
-            // The dictionary excludes the CTC blank and trailing space.
+    impl Model {
+        pub fn load(device: &Device) -> Self {
+            cfg_select! {
+                feature = "embed" => Self::from_embedded(device),
+                _ => Self::from_file(WEIGHTS_FILE, device),
+            }
+        }
+    }
+
+    impl CtcDecoderConfig {
+        pub fn pp_ocrv6_tiny() -> Self {
             let mut characters = vec![String::new()];
             characters.extend(DICTIONARY.lines().map(str::to_owned));
             characters.push(" ".to_owned());
-            Self {
-                model,
-                preprocess: RecPreProcess {
-                    height: NonZeroU32::new(48).unwrap(),
-                    width: NonZeroU32::new(320).unwrap(),
-                },
-                decoder: CtcDecoder { characters },
-                batch_size: Self::DEFAULT_BATCH_SIZE,
-            }
+            Self { characters }
         }
     }
 }
 
-impl crate::OcrPipeline<det_model::Model, rec_model::Model> {
-    pub fn pp_ocrv6_tiny(device: burn::tensor::Device) -> Self {
-        Self::new(
-            crate::DbDetector::pp_ocrv6_tiny(device.clone()),
-            crate::CtcRecognizer::pp_ocrv6_tiny(device),
-        )
+impl OcrProcessor<det_model::Model, rec_model::Model> {
+    pub fn pp_ocrv6_tiny(device: Device) -> Self {
+        Self {
+            det_preprocess: DetPreProcessConfig::new().init(&device),
+            det: det_model::Model::load(&device),
+            det_postprocess: DbPostProcessConfig::new()
+                .with_box_thresh(0.4)
+                .init(&device),
+            cropper: TextCropperConfig::new().init(&device),
+            rec_batcher: RecBatcherConfig::new().init(&device),
+            rec_preprocess: RecPreProcessConfig::new().init(&device),
+            rec: rec_model::Model::load(&device),
+            rec_postprocess: CtcDecoderConfig::pp_ocrv6_tiny().init(&device),
+        }
     }
 }

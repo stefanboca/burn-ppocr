@@ -19,6 +19,7 @@
       cudaPackages = pkgs.cudaPackages_13_4;
     in {
       default = pkgs.mkShellNoCC (finalAttrs: {
+        packages = with pkgs; [tracy];
         buildInputs = with pkgs; [
           cudaPackages.cudatoolkit
           vulkan-loader

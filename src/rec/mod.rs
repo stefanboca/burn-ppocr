@@ -1,11 +1,11 @@
-pub mod ctc;
+pub mod batch;
 pub mod decode;
 pub mod preprocess;
 
+pub use batch::{RecBatch, RecBatcher, RecBatcherConfig};
 use burn::module::{Module, ModuleDisplay};
 use burn::tensor::Tensor;
-pub use ctc::CtcRecognizer;
-pub use decode::CtcDecoder;
+pub use decode::{CtcDecoder, CtcDecoderConfig};
 
 /// The tensor interface implemented by generated recognition models.
 pub trait RecModel: Module + ModuleDisplay {

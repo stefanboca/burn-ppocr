@@ -1,7 +1,21 @@
 use anyhow::Context;
-use burn::tensor::Tensor;
+use burn::config::Config;
+use burn::tensor::{Device, Tensor};
 
 use super::Recognition;
+
+#[derive(Config, Debug)]
+pub struct CtcDecoderConfig {
+    pub characters: Vec<String>,
+}
+
+impl CtcDecoderConfig {
+    pub fn init(&self, _device: &Device) -> CtcDecoder {
+        CtcDecoder {
+            characters: self.characters.clone(),
+        }
+    }
+}
 
 /// CTC reduction and decoding, independent of the recognition model.
 #[derive(Clone, Debug)]
@@ -14,7 +28,7 @@ impl CtcDecoder {
         feature = "profiling",
         tracing::instrument(skip_all, name = "rec.decode")
     )]
-    pub fn decode(&self, predictions: Tensor<3>) -> anyhow::Result<Vec<Recognition>> {
+    pub fn forward(&self, predictions: Tensor<3>) -> anyhow::Result<Vec<Recognition>> {
         let [_, timesteps, classes] = predictions.dims();
         assert_eq!(
             classes,
@@ -23,18 +37,12 @@ impl CtcDecoder {
         );
         // The exported recognizer already includes softmax. Reduce before CPU transfer.
         let (scores, indices) = predictions.max_dim_with_indices(2);
-        let (scores, indices) = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("rec.readback").entered();
-            (
-                scores
-                    .try_into_vec_as::<f32>()
-                    .context("reading recognition scores")?,
-                indices
-                    .try_into_vec_as::<i64>()
-                    .context("reading recognition indices")?,
-            )
-        };
+        let scores = scores
+            .try_into_vec_as::<f32>()
+            .context("reading recognition scores")?;
+        let indices = indices
+            .try_into_vec_as::<i64>()
+            .context("reading recognition indices")?;
         Ok(indices
             .chunks_exact(timesteps)
             .zip(scores.chunks_exact(timesteps))
@@ -42,6 +50,10 @@ impl CtcDecoder {
             .collect())
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "rec.decode_tokens")
+    )]
     pub fn decode_tokens(&self, indices: &[i64], scores: &[f32]) -> Recognition {
         let mut text = String::new();
         let mut sum = 0.0;

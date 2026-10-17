@@ -4,6 +4,7 @@ pub mod models;
 pub mod ocr;
 pub mod rec;
 
-pub use det::{DbDetector, Detection};
-pub use ocr::{OcrPipeline, OcrResult};
-pub use rec::{CtcRecognizer, Recognition};
+pub use det::Detection;
+pub use ocr::{OcrProcessor, OcrResult};
+pub use rec::Recognition;
+pub mod crop;

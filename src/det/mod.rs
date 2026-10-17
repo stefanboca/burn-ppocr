@@ -1,11 +1,9 @@
-pub mod db;
 pub mod postprocess;
 pub mod preprocess;
 
 use burn::module::{Module, ModuleDisplay};
 use burn::tensor::Tensor;
-pub use db::DbDetector;
-pub use postprocess::DbPostProcess;
+pub use postprocess::{DbPostProcess, DbPostProcessConfig};
 
 use crate::geometry::Polygon;
 

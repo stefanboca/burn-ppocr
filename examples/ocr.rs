@@ -1,6 +1,6 @@
 use burn::module::{Module, ModuleMapper, Param};
 use burn::tensor::{Device, DeviceConfig, FloatDType, Tensor};
-use burn_ppocr::OcrPipeline;
+use burn_ppocr::OcrProcessor;
 
 struct F16;
 
@@ -25,8 +25,8 @@ fn main() -> anyhow::Result<()> {
     }
     let mut device = Device::default();
     device.configure(DeviceConfig::default().float_dtype(FloatDType::F16))?;
-    let pipeline = OcrPipeline::pp_ocrv6_medium(device.clone()).map(&mut F16);
-    for (path, results) in paths.iter().zip(pipeline.forward(&images, &device)?) {
+    let pipeline = OcrProcessor::pp_ocrv6_medium(device.clone()).map(&mut F16);
+    for (path, results) in paths.iter().zip(pipeline.forward(&images)?) {
         if paths.len() > 1 {
             println!("{}", std::path::Path::new(path).display());
         }

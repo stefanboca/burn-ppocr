@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use burn_onnx::{LoadStrategy, ModelGen};
 
 fn main() {

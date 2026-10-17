@@ -1,12 +1,36 @@
 use std::num::NonZeroUsize;
 
-use anyhow::Context;
-use burn::tensor::Tensor;
+use anyhow::{Context, ensure};
+use burn::config::Config;
+use burn::tensor::{Device, Tensor};
 use image::{GrayImage, Luma};
 use imageproc::contours::{BorderType, find_contours};
 
 use super::Detection;
 use crate::geometry::{Point, Polygon};
+
+#[derive(Config, Debug)]
+pub struct DbPostProcessConfig {
+    #[config(default = 0.2)]
+    pub thresh: f32,
+    #[config(default = 0.45)]
+    pub box_thresh: f32,
+    #[config(default = 3000)]
+    pub max_candidates: usize,
+    #[config(default = 1.4)]
+    pub unclip_ratio: f32,
+}
+
+impl DbPostProcessConfig {
+    pub fn init(&self, _device: &Device) -> DbPostProcess {
+        DbPostProcess {
+            thresh: self.thresh,
+            box_thresh: self.box_thresh,
+            max_candidates: self.max_candidates,
+            unclip_ratio: self.unclip_ratio,
+        }
+    }
+}
 
 /// DB probability maps to scored text polygons, independent of the detection model.
 #[derive(Clone, Debug)]
@@ -24,15 +48,21 @@ impl DbPostProcess {
     )]
     pub fn forward(
         &self,
-        maps: Tensor<3>,
+        maps: Tensor<4>,
         src_shape: (NonZeroUsize, NonZeroUsize),
     ) -> anyhow::Result<Vec<Vec<Detection>>> {
-        maps.iter_dim(0)
+        let channels = maps.dims()[1];
+        ensure!(channels == 1);
+        maps.squeeze_dim::<3>(1)
+            .iter_dim(0)
             .map(|map| self.boxes_from_bitmap(map.squeeze_dim(0), src_shape))
             .collect()
     }
 
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip_all))]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "det.boxes_from_bitmap")
+    )]
     pub fn boxes_from_bitmap(
         &self,
         pred: Tensor<2>,
@@ -43,27 +73,32 @@ impl DbPostProcess {
             NonZeroUsize::new(height).unwrap(),
             NonZeroUsize::new(width).unwrap(),
         );
-        let pred = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("det.readback").entered();
-            pred.try_into_vec_as::<f32>()
-                .context("reading detector probabilities")?
-        };
+        let pred = pred
+            .try_into_vec_as::<f32>()
+            .context("reading detector probabilities")?;
+        Ok(self.boxes_from_probabilities(&pred, shape, src_shape))
+    }
+
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "det.boxes_from_probabilities")
+    )]
+    pub fn boxes_from_probabilities(
+        &self,
+        pred: &[f32],
+        shape: (NonZeroUsize, NonZeroUsize),
+        src_shape: (NonZeroUsize, NonZeroUsize),
+    ) -> Vec<Detection> {
         let mask = GrayImage::from_raw(
-            width as u32,
-            height as u32,
+            shape.1.get() as u32,
+            shape.0.get() as u32,
             pred.iter()
                 .map(|&value| u8::from(value > self.thresh))
                 .collect(),
         )
         .unwrap();
         let mut detections = Vec::new();
-        let contours = {
-            #[cfg(feature = "profiling")]
-            let _span = tracing::info_span!("det.find_contours").entered();
-            find_contours::<i32>(&mask)
-        };
-        for contour in contours
+        for contour in find_contours::<i32>(&mask)
             .into_iter()
             .filter(|contour| contour.border_type == BorderType::Outer && contour.parent.is_none())
             .take(self.max_candidates)
@@ -72,7 +107,7 @@ impl DbPostProcess {
             if short_side < 3.0 {
                 continue;
             }
-            let score = polygon_score(&pred, shape, &points);
+            let score = polygon_score(pred, shape, &points);
             if score < self.box_thresh {
                 continue;
             }
@@ -92,11 +127,14 @@ impl DbPostProcess {
                 score,
             });
         }
-        Ok(detections)
+        detections
     }
 }
 
-#[cfg_attr(feature = "profiling", tracing::instrument(skip_all, level = "trace"))]
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "det.polygon_score")
+)]
 pub fn polygon_score(pred: &[f32], shape: (NonZeroUsize, NonZeroUsize), polygon: &Polygon) -> f32 {
     let [ys, xs] = polygon.aabb().clamp(shape.0, shape.1).pixel_ranges();
     let local = polygon.translated(-(xs.start as f32), -(ys.start as f32));
@@ -112,6 +150,10 @@ pub fn polygon_score(pred: &[f32], shape: (NonZeroUsize, NonZeroUsize), polygon:
     if count == 0 { 0.0 } else { sum / count as f32 }
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "det.get_mini_boxes")
+)]
 fn get_mini_boxes<T: Copy + Into<f64>>(contour: &[Point<T>]) -> (Polygon, f32) {
     let (mut points, short_side) = min_area_rect(contour);
     points.sort_by(|a, b| a.x.total_cmp(&b.x));
@@ -133,6 +175,10 @@ fn get_mini_boxes<T: Copy + Into<f64>>(contour: &[Point<T>]) -> (Polygon, f32) {
     )
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "det.unclip")
+)]
 fn unclip(polygon: &Polygon, ratio: f32) -> Vec<Polygon> {
     let perimeter = polygon.perimeter();
     if perimeter == 0.0 {
@@ -141,7 +187,10 @@ fn unclip(polygon: &Polygon, ratio: f32) -> Vec<Polygon> {
     polygon.offset(polygon.area() * ratio / perimeter)
 }
 
-#[cfg_attr(feature = "profiling", tracing::instrument(skip_all, level = "trace"))]
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "geometry.min_area_rect")
+)]
 pub fn min_area_rect<T: Copy + Into<f64>>(contour: &[Point<T>]) -> ([Point<f32>; 4], f32) {
     let hull = imageproc::geometry::convex_hull(
         contour
@@ -191,6 +240,10 @@ pub fn min_area_rect<T: Copy + Into<f64>>(contour: &[Point<T>]) -> ([Point<f32>;
     best
 }
 
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "geometry.fill_poly")
+)]
 fn fill_poly(polygon: &Polygon, shape: (usize, usize)) -> GrayImage {
     let mut mask = GrayImage::new(shape.1 as u32, shape.0 as u32);
     let mut points: Vec<_> = polygon

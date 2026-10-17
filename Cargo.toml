@@ -20,16 +20,17 @@ anyhow = "1"
 burn = { version = "0.22.0", features = ["cpu", "cuda", "flex", "vulkan"] }
 burn-store = "0.22.0"
 clipper2-rust = "1.2.0"
+cubecl = { version = "0.11", default-features = false, features = ["profile-tracy"], optional = true }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 imageproc = { version = "0.27.0", default-features = false }
 tracing = { version = "0.1", optional = true }
+tracing-tracy = { version = "0.11", features = ["delayed-init", "flush-on-exit"], optional = true }
 
 # Match Turso's branches 0.4 dependency and enable std to avoid a removed nightly abort intrinsic.
 branches = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-tracing-chrome = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
@@ -41,7 +42,7 @@ embed = []
 pp_ocrv6_medium = []
 pp_ocrv6_small = []
 pp_ocrv6_tiny = []
-profiling = ["dep:tracing"]
+profiling = ["dep:cubecl", "dep:tracing", "dep:tracing-tracy"]
 
 [profile.bench]
 debug = 1

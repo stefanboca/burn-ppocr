@@ -9,6 +9,10 @@ pub struct Polygon(pub Vec<Point<f32>>);
 
 impl Polygon {
     /// Scale between `(height, width)` shapes, round, and clip to width/height.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.rescaled")
+    )]
     pub fn rescaled(
         &self,
         from: (NonZeroUsize, NonZeroUsize),
@@ -23,7 +27,10 @@ impl Polygon {
     }
 
     /// Offset the closed polygon by `distance`, using round joins.
-    #[cfg_attr(feature = "profiling", tracing::instrument(skip_all, level = "trace"))]
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.offset")
+    )]
     pub fn offset(&self, distance: f32) -> Vec<Self> {
         if self.0.len() < 3 || !distance.is_finite() {
             return Vec::new();
@@ -53,6 +60,10 @@ impl Polygon {
     }
 
     /// Absolute area from the shoelace formula.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.area")
+    )]
     pub fn area(&self) -> f32 {
         self.edges()
             .map(|(a, b)| a.x * b.y - b.x * a.y)
@@ -62,6 +73,10 @@ impl Polygon {
     }
 
     /// Length of the closed boundary, including the last-to-first edge.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.perimeter")
+    )]
     pub fn perimeter(&self) -> f32 {
         self.edges()
             .map(|(a, b)| (b.x - a.x).hypot(b.y - a.y))
@@ -75,6 +90,10 @@ impl Polygon {
             .zip(self.0.iter().copied().cycle().skip(1))
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.aabb")
+    )]
     pub fn aabb(&self) -> Rect {
         let mut min = self.0[0];
         let mut max = self.0[0];
@@ -87,6 +106,10 @@ impl Polygon {
         Rect { min, max }
     }
 
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.translated")
+    )]
     pub fn translated(&self, dx: f32, dy: f32) -> Self {
         let delta = Point::new(dx, dy);
         Self(self.0.iter().map(|&point| point + delta).collect())
@@ -117,6 +140,10 @@ pub struct Rect {
 }
 
 impl Rect {
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.clamp")
+    )]
     pub fn clamp(self, height: NonZeroUsize, width: NonZeroUsize) -> Self {
         let xmax = (width.get() - 1) as f32;
         let ymax = (height.get() - 1) as f32;
@@ -127,6 +154,10 @@ impl Rect {
     }
 
     /// Round outward into half-open tensor slice ranges, ordered `[y, x]`.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(skip_all, name = "geometry.pixel_ranges")
+    )]
     pub fn pixel_ranges(self) -> [Range<usize>; 2] {
         let xmin = self.min.x.floor() as usize;
         let ymin = self.min.y.floor() as usize;
