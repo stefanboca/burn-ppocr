@@ -1,0 +1,4 @@
+PP-OCRv6_tiny_dict.txt is from PaddlePaddle/PaddleOCR:
+https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/dict/ppocrv6_tiny_dict.txt
+Copyright PaddlePaddle Authors. Distributed under Apache License 2.0;
+see LICENSE-PaddleOCR in this directory.

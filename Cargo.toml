@@ -3,9 +3,16 @@ name = "burn-ppocr"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "ocr"
+required-features = ["pp_ocrv6_tiny"]
+
 [dependencies]
 burn = { version = "0.22.0", features = ["cpu", "flex", "vulkan"] }
 burn-store = "0.22.0"
+clipper2-rust = "1.2.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "0.27.0", default-features = false }
 
 # Match Turso's branches 0.4 dependency and enable std to avoid a removed nightly abort intrinsic.
 branches = { version = "0.4", default-features = false, features = ["std"] }
@@ -14,6 +21,5 @@ branches = { version = "0.4", default-features = false, features = ["std"] }
 burn-onnx = "0.22.0"
 
 [features]
-# default = ["pp_ocrv6_tiny_det", "pp_ocrv6_tiny_rec"]
-pp_ocrv6_tiny_det = []
-pp_ocrv6_tiny_rec = []
+default = []
+pp_ocrv6_tiny = []

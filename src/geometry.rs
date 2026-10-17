@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use clipper2_rust::{EndType, JoinType, Point64, inflate_paths_64};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Polygon(pub Vec<[f32; 2]>);
 
@@ -17,7 +19,31 @@ impl Polygon {
 
     /// Offset the closed polygon by `distance`, using round joins.
     pub fn offset(&self, distance: f32) -> Vec<Self> {
-        todo!("PyclipperOffset.Execute")
+        if self.0.len() < 3 || !distance.is_finite() {
+            return Vec::new();
+        }
+        let path = self
+            .0
+            .iter()
+            .map(|&[x, y]| Point64::new(x as i64, y as i64))
+            .collect();
+        inflate_paths_64(
+            &vec![path],
+            distance as f64,
+            JoinType::Round,
+            EndType::Polygon,
+            2.0,
+            0.25,
+        )
+        .into_iter()
+        .map(|path| {
+            Self(
+                path.into_iter()
+                    .map(|point| [point.x as f32, point.y as f32])
+                    .collect(),
+            )
+        })
+        .collect()
     }
 
     /// Absolute area from the shoelace formula.
@@ -100,6 +126,19 @@ impl Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_offset_expands_both_polygon_windings() {
+        let mut polygon = Polygon(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+        for _ in 0..2 {
+            let expanded = polygon.offset(2.0);
+            assert_eq!(expanded.len(), 1);
+            assert!(expanded[0].area() > polygon.area());
+            assert_eq!(expanded[0].aabb().min, [-2.0, -2.0]);
+            assert_eq!(expanded[0].aabb().max, [12.0, 12.0]);
+            polygon.0.reverse();
+        }
+    }
 
     #[test]
     fn closed_boundary_and_area_do_not_depend_on_winding() {

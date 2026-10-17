@@ -1,19 +1,20 @@
 use burn::prelude::*;
+use image::{GrayImage, Luma};
+use imageproc::point::Point;
 
 use crate::geometry::Polygon;
 
 /// One text region in source-image coordinates, with its mean prediction score.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Detection {
     pub points: Polygon,
     pub score: f32,
 }
 
-#[derive(Debug)]
 pub struct DbPostProcess {
     pub thresh: f32,
     pub box_thresh: f32,
-    pub max_candidates: u16,
+    pub max_candidates: usize,
     pub unclip_ratio: f32,
 }
 
@@ -34,40 +35,46 @@ impl DbPostProcess {
         assert_eq!(batch, src_shapes.len());
         assert_eq!(channels, 1);
         assert!(height > 0 && width > 0);
-        assert!(src_shapes.iter().all(|&(h, w)| h > 0 && w > 0));
-
-        let segmentation = maps.clone().greater_elem(self.thresh);
-
-        let max_candidates = usize::from(self.max_candidates);
+        // Contours and geometry are CPU operations. Read each probability map once,
+        // rather than transferring a separate polygon mask for every candidate.
         maps.iter_dim(0)
-            .zip(segmentation.iter_dim(0))
             .zip(src_shapes)
-            .map(move |((pred, mask), src_shape)| {
-                let contours = find_contours(mask.squeeze_dims::<2>(&[0, 1]))
-                    .into_iter()
-                    .take(max_candidates)
-                    .collect();
-                self.boxes_from_bitmap(pred.squeeze_dims::<2>(&[0, 1]), contours, src_shape)
+            .map(|(pred, src_shape)| {
+                let pred = pred
+                    .into_data()
+                    .try_into_vec_as::<f32>()
+                    .expect("detection probabilities must be convertible to f32");
+                assert!(
+                    pred.iter().all(|value| value.is_finite()),
+                    "detector returned nonfinite probabilities"
+                );
+                self.boxes_from_bitmap(&pred, (height, width), src_shape)
             })
             .collect()
     }
 
     fn boxes_from_bitmap(
         &self,
-        pred: Tensor<2>,
-        contours: Vec<Polygon>,
+        pred: &[f32],
+        shape: (usize, usize),
         src_shape: (usize, usize),
     ) -> Vec<Detection> {
-        const MIN_SIZE: f32 = 3.0;
-
-        let [height, width] = pred.dims();
+        let (height, width) = shape;
+        let mask = GrayImage::from_raw(
+            width as u32,
+            height as u32,
+            pred.iter()
+                .map(|&value| u8::from(value > self.thresh))
+                .collect(),
+        )
+        .unwrap();
         let mut detections = Vec::new();
-        for contour in contours {
+        for contour in find_contours(&mask).into_iter().take(self.max_candidates) {
             let (points, short_side) = get_mini_boxes(&contour);
-            if short_side < MIN_SIZE {
+            if short_side < 3.0 {
                 continue;
             }
-            let score = polygon_score(pred.clone(), &points);
+            let score = polygon_score(pred, shape, &points);
             if score < self.box_thresh {
                 continue;
             }
@@ -79,12 +86,11 @@ impl DbPostProcess {
                 continue;
             }
             let (points, short_side) = get_mini_boxes(expanded);
-            if short_side < MIN_SIZE + 2.0 {
+            if short_side < 5.0 {
                 continue;
             }
-
             detections.push(Detection {
-                points: points.rescaled((height, width), src_shape),
+                points: points.rescaled(shape, src_shape),
                 score,
             });
         }
@@ -92,21 +98,24 @@ impl DbPostProcess {
     }
 }
 
-fn polygon_score(pred: Tensor<2>, polygon: &Polygon) -> f32 {
-    let [height, width] = pred.dims();
-    let [ys, xs] = polygon.aabb().clamp(height, width).pixel_ranges();
-    let local_polygon = polygon.translated(-(xs.start as f32), -(ys.start as f32));
-
-    let mask = fill_poly(&local_polygon, (ys.len(), xs.len()), &pred.device());
-    let count = mask.clone().float().sum().clamp_min(1.0);
-    let values = pred.slice([ys, xs]).mask_fill(mask.bool_not(), 0.0);
-    (values.sum() / count).into_scalar::<f32>()
+fn polygon_score(pred: &[f32], shape: (usize, usize), polygon: &Polygon) -> f32 {
+    let [ys, xs] = polygon.aabb().clamp(shape.0, shape.1).pixel_ranges();
+    let local = polygon.translated(-(xs.start as f32), -(ys.start as f32));
+    let mask = fill_poly(&local, (ys.len(), xs.len()));
+    let mut sum = 0.0;
+    let mut count = 0;
+    for (x, y, pixel) in mask.enumerate_pixels() {
+        if pixel[0] != 0 {
+            sum += pred[(ys.start + y as usize) * shape.1 + xs.start + x as usize];
+            count += 1;
+        }
+    }
+    if count == 0 { 0.0 } else { sum / count as f32 }
 }
 
 fn get_mini_boxes(contour: &Polygon) -> (Polygon, f32) {
     let (mut points, short_side) = min_area_rect(contour);
     points.sort_by(|a, b| a[0].total_cmp(&b[0]));
-
     let [
         mut left_top,
         mut left_bottom,
@@ -133,14 +142,125 @@ fn unclip(polygon: &Polygon, ratio: f32) -> Vec<Polygon> {
     polygon.offset(polygon.area() * ratio / perimeter)
 }
 
-fn find_contours(mask: Tensor<2, Bool>) -> Vec<Polygon> {
-    todo!("cv2.findContours")
+fn find_contours(mask: &GrayImage) -> Vec<Polygon> {
+    imageproc::contours::find_contours::<i32>(mask)
+        .into_iter()
+        .map(|contour| {
+            Polygon(
+                contour
+                    .points
+                    .into_iter()
+                    .map(|point| [point.x as f32, point.y as f32])
+                    .collect(),
+            )
+        })
+        .filter(|polygon| !polygon.0.is_empty())
+        .collect()
 }
 
 fn min_area_rect(contour: &Polygon) -> ([[f32; 2]; 4], f32) {
-    todo!("cv2.minAreaRect followed by cv2.boxPoints")
+    let hull = imageproc::geometry::convex_hull(
+        contour
+            .0
+            .iter()
+            .map(|&[x, y]| Point::new(x as f64, y as f64))
+            .collect::<Vec<_>>(),
+    );
+    if hull.len() < 2 {
+        let point = hull
+            .first()
+            .map_or([0.0; 2], |point| [point.x as f32, point.y as f32]);
+        return ([point; 4], 0.0);
+    }
+    // imageproc's min_area_rect rounds corners to integers, even for float inputs.
+    // Project the hull onto each edge to retain OpenCV-style floating-point corners.
+    let mut best_area = f64::INFINITY;
+    let mut best = ([[0.0; 2]; 4], 0.0);
+    for (a, b) in hull.iter().zip(hull.iter().cycle().skip(1)) {
+        let length = (b.x - a.x).hypot(b.y - a.y);
+        if length == 0.0 {
+            continue;
+        }
+        let (ux, uy) = ((b.x - a.x) / length, (b.y - a.y) / length);
+        let (mut xmin, mut xmax, mut ymin, mut ymax) = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for point in &hull {
+            let x = point.x * ux + point.y * uy;
+            let y = -point.x * uy + point.y * ux;
+            xmin = xmin.min(x);
+            xmax = xmax.max(x);
+            ymin = ymin.min(y);
+            ymax = ymax.max(y);
+        }
+        let (width, height) = (xmax - xmin, ymax - ymin);
+        let area = width * height;
+        if area < best_area {
+            best_area = area;
+            let points = [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]]
+                .map(|[x, y]| [(x * ux - y * uy) as f32, (x * uy + y * ux) as f32]);
+            best = (points, width.min(height) as f32);
+        }
+    }
+    best
 }
 
-fn fill_poly(polygon: &Polygon, shape: (usize, usize), device: &Device) -> Tensor<2, Bool> {
-    todo!("cv2.fillPoly")
+fn fill_poly(polygon: &Polygon, shape: (usize, usize)) -> GrayImage {
+    let mut mask = GrayImage::new(shape.1 as u32, shape.0 as u32);
+    let mut points: Vec<_> = polygon
+        .0
+        .iter()
+        .map(|&[x, y]| Point::new(x as i32, y as i32))
+        .collect();
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    if points.len() >= 3 {
+        imageproc::drawing::draw_polygon_mut(&mut mask, &points, Luma([1]));
+    }
+    mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detector_extracts_expands_and_rescales_a_text_region() {
+        let mut probabilities = vec![0.0f32; 80 * 48];
+        for y in 10..=25 {
+            for x in 10..=40 {
+                probabilities[y * 80 + x] = 0.9;
+            }
+        }
+        let maps = Tensor::from_data(
+            TensorData::new(probabilities, [1, 1, 48, 80]),
+            &Device::flex(),
+        );
+        let detections = DbPostProcess::default().forward(maps, vec![(96, 160)]);
+        assert_eq!(detections[0].len(), 1);
+        let detection = &detections[0][0];
+        assert_eq!(detection.points.0.len(), 4);
+        assert!((detection.score - 0.9).abs() < 1e-4);
+        let bounds = detection.points.aabb();
+        assert!(bounds.min[0] < 20.0 && bounds.max[0] > 80.0);
+        assert!(bounds.min[1] < 20.0 && bounds.max[1] > 50.0);
+    }
+
+    #[test]
+    fn minimum_rectangle_keeps_fractional_rotated_corners() {
+        let polygon = Polygon(vec![[0.0, 0.0], [4.0, 2.0], [3.0, 4.0], [-1.0, 2.0]]);
+        let (rectangle, short_side) = get_mini_boxes(&polygon);
+        assert!((rectangle.area() - 10.0).abs() < 1e-4);
+        assert!((short_side - 5.0f32.sqrt()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn threshold_comparison_is_strict() {
+        let maps = Tensor::full([1, 1, 16, 16], 0.2, &Device::flex());
+        assert!(DbPostProcess::default().forward(maps, vec![(16, 16)])[0].is_empty());
+    }
 }
