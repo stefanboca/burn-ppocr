@@ -1,56 +1,50 @@
 use burn::prelude::*;
-use image::{GrayImage, Luma};
+use image::{GrayImage, Luma, RgbImage};
 use imageproc::point::Point;
 
+use super::preprocess::DetPreProcess;
+use super::{Det, DetModel, Detection};
 use crate::geometry::Polygon;
 
-/// One text region in source-image coordinates, with its mean prediction score.
-#[derive(Clone, Debug)]
-pub struct Detection {
-    pub points: Polygon,
-    pub score: f32,
-}
-
-pub struct DbPostProcess {
+pub struct DbDetector<M> {
+    model: M,
+    device: Device,
+    preprocess: DetPreProcess,
     pub thresh: f32,
     pub box_thresh: f32,
     pub max_candidates: usize,
     pub unclip_ratio: f32,
 }
 
-impl Default for DbPostProcess {
-    fn default() -> Self {
+impl<M: DetModel> DbDetector<M> {
+    pub fn new(model: M, device: Device) -> Self {
         Self {
+            model,
+            device,
+            preprocess: DetPreProcess::default(),
             thresh: 0.2,
             box_thresh: 0.4,
             max_candidates: 3000,
             unclip_ratio: 1.4,
         }
     }
-}
 
-impl DbPostProcess {
-    pub fn forward(&self, maps: Tensor<4>, src_shapes: Vec<(usize, usize)>) -> Vec<Vec<Detection>> {
+    fn postprocess(&self, maps: Tensor<4>, src_shape: (usize, usize)) -> Vec<Detection> {
         let [batch, channels, height, width] = maps.dims();
-        assert_eq!(batch, src_shapes.len());
+        assert_eq!(batch, 1);
         assert_eq!(channels, 1);
         assert!(height > 0 && width > 0);
-        // Contours and geometry are CPU operations. Read each probability map once,
+        // Contours and geometry are CPU operations. Read the probability map once,
         // rather than transferring a separate polygon mask for every candidate.
-        maps.iter_dim(0)
-            .zip(src_shapes)
-            .map(|(pred, src_shape)| {
-                let pred = pred
-                    .into_data()
-                    .try_into_vec_as::<f32>()
-                    .expect("detection probabilities must be convertible to f32");
-                assert!(
-                    pred.iter().all(|value| value.is_finite()),
-                    "detector returned nonfinite probabilities"
-                );
-                self.boxes_from_bitmap(&pred, (height, width), src_shape)
-            })
-            .collect()
+        let pred = maps
+            .into_data()
+            .try_into_vec_as::<f32>()
+            .expect("detection probabilities must be convertible to f32");
+        assert!(
+            pred.iter().all(|value| value.is_finite()),
+            "detector returned nonfinite probabilities"
+        );
+        self.boxes_from_bitmap(&pred, (height, width), src_shape)
     }
 
     fn boxes_from_bitmap(
@@ -95,6 +89,17 @@ impl DbPostProcess {
             });
         }
         detections
+    }
+}
+
+impl<M: DetModel> Det for DbDetector<M> {
+    fn forward(&self, image: &RgbImage) -> Vec<Detection> {
+        if image.width() == 0 || image.height() == 0 {
+            return Vec::new();
+        }
+        let input = self.preprocess.forward(image, &self.device);
+        let maps = self.model.forward(input);
+        self.postprocess(maps, (image.height() as usize, image.width() as usize))
     }
 }
 
@@ -228,6 +233,14 @@ fn fill_poly(polygon: &Polygon, shape: (usize, usize)) -> GrayImage {
 mod tests {
     use super::*;
 
+    struct MapModel(Tensor<4>);
+
+    impl DetModel for MapModel {
+        fn forward(&self, _: Tensor<4>) -> Tensor<4> {
+            self.0.clone()
+        }
+    }
+
     #[test]
     fn detector_extracts_expands_and_rescales_a_text_region() {
         let mut probabilities = vec![0.0f32; 80 * 48];
@@ -240,9 +253,10 @@ mod tests {
             TensorData::new(probabilities, [1, 1, 48, 80]),
             &Device::flex(),
         );
-        let detections = DbPostProcess::default().forward(maps, vec![(96, 160)]);
-        assert_eq!(detections[0].len(), 1);
-        let detection = &detections[0][0];
+        let detector = DbDetector::new(MapModel(maps), Device::flex());
+        let detections = detector.forward(&RgbImage::new(160, 96));
+        assert_eq!(detections.len(), 1);
+        let detection = &detections[0];
         assert_eq!(detection.points.0.len(), 4);
         assert!((detection.score - 0.9).abs() < 1e-4);
         let bounds = detection.points.aabb();
@@ -261,6 +275,7 @@ mod tests {
     #[test]
     fn threshold_comparison_is_strict() {
         let maps = Tensor::full([1, 1, 16, 16], 0.2, &Device::flex());
-        assert!(DbPostProcess::default().forward(maps, vec![(16, 16)])[0].is_empty());
+        let detector = DbDetector::new(MapModel(maps), Device::flex());
+        assert!(detector.forward(&RgbImage::new(16, 16)).is_empty());
     }
 }

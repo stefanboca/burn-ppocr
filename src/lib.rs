@@ -1,12 +1,9 @@
-pub mod db_postprocess;
+pub mod det;
 pub mod geometry;
 pub mod models;
-mod pipeline;
-mod preprocess;
-mod processors;
-mod rec_postprocess;
+mod ocr;
+pub mod rec;
 
-pub use db_postprocess::Detection;
-pub use models::{Det, Rec};
-pub use pipeline::{OcrPipeline, OcrResult};
-pub use rec_postprocess::Recognition;
+pub use det::{DbDetector, Det, Detection};
+pub use ocr::{OcrPipeline, OcrResult};
+pub use rec::{CtcRecognizer, Rec, Recognition};

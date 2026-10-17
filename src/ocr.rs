@@ -1,9 +1,8 @@
 use image::{DynamicImage, RgbImage};
+use imageproc::geometric_transformations::{Border, Interpolation, Projection, warp_into};
 
-use crate::db_postprocess::Detection;
-use crate::models::{Det, Rec};
-use crate::preprocess::crop_text;
-use crate::rec_postprocess::Recognition;
+use crate::geometry::Polygon;
+use crate::{Det, Detection, Rec, Recognition};
 
 /// A text region in source-image coordinates, with detection and recognition scores.
 #[derive(Debug)]
@@ -27,8 +26,8 @@ impl OcrPipeline {
     #[cfg(feature = "pp_ocrv6_tiny")]
     pub fn pp_ocrv6_tiny(device: burn::tensor::Device) -> Self {
         Self::new(
-            Box::new(crate::models::PpOcrV6TinyDet::new(device.clone())),
-            Box::new(crate::models::PpOcrV6TinyRec::new(device)),
+            Box::new(crate::DbDetector::pp_ocrv6_tiny(device.clone())),
+            Box::new(crate::CtcRecognizer::pp_ocrv6_tiny(device)),
         )
     }
 
@@ -70,6 +69,38 @@ impl OcrPipeline {
     }
 }
 
+/// Rectify the four ordered corners without applying model-specific orientation rules.
+pub fn crop_text(image: &RgbImage, polygon: &Polygon) -> Option<RgbImage> {
+    let points: [[f32; 2]; 4] = polygon.0.as_slice().try_into().ok()?;
+    if !points.iter().flatten().all(|x| x.is_finite()) {
+        return None;
+    }
+    let distance = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+    let width = distance(points[0], points[1]).max(distance(points[2], points[3])) as u32;
+    let height = distance(points[0], points[3]).max(distance(points[1], points[2])) as u32;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let projection = Projection::from_control_points(
+        points.map(|[x, y]| (x, y)),
+        [
+            (0.0, 0.0),
+            (width as f32, 0.0),
+            (width as f32, height as f32),
+            (0.0, height as f32),
+        ],
+    )?;
+    let mut crop = RgbImage::new(width, height);
+    warp_into(
+        image,
+        projection,
+        Interpolation::Bicubic,
+        Border::Replicate,
+        &mut crop,
+    );
+    Some(crop)
+}
+
 /// PaddleOCR's top-to-bottom sort, followed by left-to-right ordering within 10 pixels.
 fn sort_reading_order(detections: &mut [Detection]) {
     detections.sort_by(|a, b| {
@@ -99,7 +130,6 @@ mod tests {
     use image::Rgb;
 
     use super::*;
-    use crate::geometry::Polygon;
 
     struct Detector;
     impl Det for Detector {
@@ -172,5 +202,18 @@ mod tests {
         assert!(pipeline.forward(&DynamicImage::new_rgb8(10, 10)).is_empty());
         assert_eq!(calls.get(), 0);
         assert!(pipeline.forward(&DynamicImage::new_rgb8(0, 0)).is_empty());
+    }
+    #[test]
+    fn perspective_crop_replicates_source_borders() {
+        let image = RgbImage::from_pixel(3, 3, Rgb([17, 80, 200]));
+        let polygon = Polygon(vec![[-1.0, -1.0], [4.0, -1.0], [4.0, 4.0], [-1.0, 4.0]]);
+        let crop = crop_text(&image, &polygon).unwrap();
+        assert_eq!(crop.dimensions(), (5, 5));
+        for pixel in crop.pixels() {
+            for (actual, expected) in pixel.0.into_iter().zip([17u8, 80, 200]) {
+                assert!(actual.abs_diff(expected) <= 1);
+            }
+        }
+        assert!(crop_text(&image, &Polygon(vec![[0.0, 0.0]; 4])).is_none());
     }
 }
