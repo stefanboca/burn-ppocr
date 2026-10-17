@@ -1,13 +1,13 @@
-profiling.logger = { level = "basic", stdout = true }  # disabled, minimal, basic, medium, full
-streaming.logger = { level = "basic", stdout = true }  # disabled, minimal, full
+# profiling.logger = { level = "basic", stdout = true }  # disabled, minimal, basic, medium, full
+# streaming.logger = { level = "basic", stdout = true }  # disabled, minimal, full
 
 [autotune]
-level = "balanced"  # minimal, balanced, extensive, full
-logger = { level = "minimal", stdout = true }  # disabled, minimal, full
+level = "minimal"  # minimal, balanced, extensive, full
+# logger = { level = "minimal", stdout = true }  # disabled, minimal, full
 
 [compilation]
 cache = true
-logger = { level = "basic", stdout = true }  # disabled, basic, full
+# logger = { level = "basic", stdout = true }  # disabled, basic, full
 
 [environment]
 path = "global"
