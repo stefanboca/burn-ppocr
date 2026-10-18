@@ -1,11 +1,6 @@
 //! `cargo run --profile profiling --example profile --features pp_ocrv6_medium,profiling -- IMAGE`
 //! Open Tracy 0.13.1 and connect to this process to capture CPU and GPU zones.
-//! Set `BURN_DEVICE`, `OCR_WARMUP` (10), and `OCR_ITERATIONS` (10).
-//! Kernel profiling is enabled only in this example; ordinary benchmarks are unaffected.
-//! CPU stage spans complement the GPU kernel zones provided by CubeCL.
 use std::hint::black_box;
-use std::num::NonZeroU32;
-use std::time::{Duration, Instant};
 
 use burn::module::{Module, ModuleMapper, Param};
 use burn::tensor::{Device, DeviceConfig, FloatDType, Tensor};
@@ -57,10 +52,9 @@ fn main() -> anyhow::Result<()> {
     eprintln!("Connect Tracy to this process to collect the capture.");
     client.frame_mark();
 
-    let start = Instant::now();
-    black_box(pipeline.forward(&images)?);
-    client.frame_mark();
-    let elapsed = start.elapsed();
-    eprintln!("{elapsed:?}");
+    for _ in 0..10 {
+        black_box(pipeline.forward(&images)?);
+        client.frame_mark();
+    }
     Ok(())
 }
