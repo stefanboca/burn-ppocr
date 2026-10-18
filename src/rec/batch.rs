@@ -1,12 +1,13 @@
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
 use burn::config::Config;
 use image::{RgbImage, imageops};
 
 #[derive(Debug)]
-pub struct RecBatch {
+pub struct RecBatch<'a> {
     pub indices: Vec<usize>,
-    pub images: Vec<RgbImage>,
+    pub images: Vec<Cow<'a, RgbImage>>,
 }
 
 /// Orient crops and group them by aspect ratio, retaining their original indices.
@@ -34,9 +35,10 @@ impl RecBatcher {
         feature = "profiling",
         tracing::instrument(skip_all, name = "rec.batch")
     )]
-    pub fn forward(&self, crops: &[&RgbImage]) -> Vec<RecBatch> {
+    pub fn forward<'a>(&self, crops: &[&'a RgbImage]) -> Vec<RecBatch<'a>> {
         let mut crops: Vec<_> = crops
             .iter()
+            .copied()
             .enumerate()
             .filter(|(_, crop)| crop.width() > 0 && crop.height() > 0)
             .map(|(index, crop)| (index, orient_crop(crop)))
@@ -57,10 +59,10 @@ impl RecBatcher {
     feature = "profiling",
     tracing::instrument(skip_all, name = "rec.orient_crop")
 )]
-fn orient_crop(crop: &RgbImage) -> RgbImage {
+fn orient_crop(crop: &RgbImage) -> Cow<'_, RgbImage> {
     if crop.height() as f64 / crop.width() as f64 >= 1.5 {
-        imageops::rotate270(crop)
+        Cow::Owned(imageops::rotate270(crop))
     } else {
-        crop.clone()
+        Cow::Borrowed(crop)
     }
 }

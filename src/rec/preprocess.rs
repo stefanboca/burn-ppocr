@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::num::NonZeroU32;
 
 use burn::prelude::*;
@@ -45,12 +46,11 @@ impl RecPreProcess {
         feature = "profiling",
         tracing::instrument(skip_all, name = "rec.preprocess")
     )]
-    pub fn forward(&self, crops: &[RgbImage]) -> Tensor<4> {
-        let images: Vec<_> = crops.iter().collect();
-        let width = self.batch_width(&images);
+    pub fn forward(&self, crops: &[impl Borrow<RgbImage>]) -> Tensor<4> {
+        let width = self.batch_width(crops);
         let images = crops
             .iter()
-            .map(|crop| self.forward_image(crop, width))
+            .map(|crop| self.forward_image(crop.borrow(), width))
             .collect();
         Tensor::stack(images, 0)
     }
@@ -59,10 +59,13 @@ impl RecPreProcess {
         feature = "profiling",
         tracing::instrument(skip_all, name = "rec.batch_width")
     )]
-    pub fn batch_width(&self, images: &[&RgbImage]) -> NonZeroU32 {
+    pub fn batch_width(&self, images: &[impl Borrow<RgbImage>]) -> NonZeroU32 {
         let ratio = images
             .iter()
-            .map(|image| image.width() as f64 / image.height() as f64)
+            .map(|image| {
+                let image = image.borrow();
+                image.width() as f64 / image.height() as f64
+            })
             .fold(self.width.get() as f64 / self.height.get() as f64, f64::max);
         NonZeroU32::new((self.height.get() as f64 * ratio) as u32)
             .unwrap_or(self.width)
