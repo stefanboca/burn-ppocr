@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::{Context, ensure};
 use burn::config::Config;
-use burn::tensor::{Device, Tensor};
+use burn::tensor::Tensor;
 use image::{GrayImage, Luma};
 use imageproc::contours::{BorderType, find_contours};
 
@@ -22,7 +22,7 @@ pub struct DbPostProcessConfig {
 }
 
 impl DbPostProcessConfig {
-    pub fn init(&self, _device: &Device) -> DbPostProcess {
+    pub fn init(&self) -> DbPostProcess {
         DbPostProcess {
             thresh: self.thresh,
             box_thresh: self.box_thresh,

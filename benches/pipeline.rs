@@ -37,9 +37,7 @@ fn components(c: &mut Criterion) {
         NonZeroUsize::new(1920).unwrap(),
     );
     let det_preprocess = DetPreProcessConfig::new().init(&device);
-    let det_postprocess = DbPostProcessConfig::new()
-        .with_box_thresh(0.4)
-        .init(&device);
+    let det_postprocess = DbPostProcessConfig::new().with_box_thresh(0.4).init();
     // 64 disconnected text-like regions; avoid a trivially empty postprocessing workload.
     let mut pred = vec![0.01f32; 640 * 960];
     let mut detections = Vec::new();
@@ -74,9 +72,9 @@ fn components(c: &mut Criterion) {
         )
         .chain(std::iter::once(" ".to_owned()))
         .collect();
-    let decoder = CtcDecoderConfig::new(characters).init(&device);
-    let cropper = TextCropperConfig::new().init(&device);
-    let batcher = RecBatcherConfig::new().init(&device);
+    let decoder = CtcDecoderConfig::new(characters).init();
+    let cropper = TextCropperConfig::new().init();
+    let batcher = RecBatcherConfig::new().init();
     let classes = decoder.characters.len();
     let mut probabilities = vec![0.0f32; 6 * 80 * classes];
     for t in 0..6 * 80 {

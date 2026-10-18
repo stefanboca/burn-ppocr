@@ -1,10 +1,7 @@
 use std::num::NonZeroUsize;
 
 use burn::config::Config;
-use burn::tensor::Device;
-use image::RgbImage;
-
-use super::preprocess::orient_crop;
+use image::{RgbImage, imageops};
 
 #[derive(Debug)]
 pub struct RecBatch {
@@ -25,7 +22,7 @@ pub struct RecBatcherConfig {
 }
 
 impl RecBatcherConfig {
-    pub fn init(&self, _device: &Device) -> RecBatcher {
+    pub fn init(&self) -> RecBatcher {
         RecBatcher {
             batch_size: self.batch_size,
         }
@@ -44,10 +41,8 @@ impl RecBatcher {
             .filter(|(_, crop)| crop.width() > 0 && crop.height() > 0)
             .map(|(index, crop)| (index, orient_crop(crop)))
             .collect();
-        crops.sort_by(|(_, a), (_, b)| {
-            let aspect = |image: &RgbImage| image.width() as f64 / image.height() as f64;
-            aspect(a).total_cmp(&aspect(b))
-        });
+        let aspect = |image: &RgbImage| image.width() as f64 / image.height() as f64;
+        crops.sort_by(|(_, a), (_, b)| aspect(a).total_cmp(&aspect(b)));
         let mut crops = crops.into_iter();
         let mut batches = Vec::new();
         while crops.len() > 0 {
@@ -55,5 +50,17 @@ impl RecBatcher {
             batches.push(RecBatch { indices, images });
         }
         batches
+    }
+}
+
+#[cfg_attr(
+    feature = "profiling",
+    tracing::instrument(skip_all, name = "rec.orient_crop")
+)]
+fn orient_crop(crop: &RgbImage) -> RgbImage {
+    if crop.height() as f64 / crop.width() as f64 >= 1.5 {
+        imageops::rotate270(crop)
+    } else {
+        crop.clone()
     }
 }

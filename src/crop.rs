@@ -1,5 +1,4 @@
 use burn::config::Config;
-use burn::tensor::Device;
 use image::RgbImage;
 use imageproc::geometric_transformations::{Border, Interpolation, Projection, warp_into};
 
@@ -21,7 +20,7 @@ pub struct TextCropperConfig {
 }
 
 impl TextCropperConfig {
-    pub fn init(&self, _device: &Device) -> TextCropper {
+    pub fn init(&self) -> TextCropper {
         TextCropper {
             reading_order_tolerance: self.reading_order_tolerance,
         }
@@ -40,11 +39,7 @@ impl TextCropper {
         tracing::instrument(skip_all, name = "ocr.crop")
     )]
     pub fn forward(&self, images: &[RgbImage], detections: Vec<Vec<Detection>>) -> Vec<TextCrop> {
-        assert_eq!(
-            detections.len(),
-            images.len(),
-            "detector must return one result list per image"
-        );
+        assert_eq!(detections.len(), images.len());
         let mut crops = Vec::new();
         for (image_index, (image, mut detections)) in images.iter().zip(detections).enumerate() {
             detections.retain(|detection| detection.points.0.len() == 4);

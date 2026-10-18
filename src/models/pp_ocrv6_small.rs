@@ -78,14 +78,12 @@ impl OcrProcessor<det_model::Model, rec_model::Model> {
         Self {
             det_preprocess: DetPreProcessConfig::new().init(&device),
             det: det_model::Model::load(&device),
-            det_postprocess: DbPostProcessConfig::new()
-                .with_box_thresh(0.45)
-                .init(&device),
-            cropper: TextCropperConfig::new().init(&device),
-            rec_batcher: RecBatcherConfig::new().init(&device),
+            det_postprocess: DbPostProcessConfig::new().with_box_thresh(0.45).init(),
+            cropper: TextCropperConfig::new().init(),
+            rec_batcher: RecBatcherConfig::new().init(),
             rec_preprocess: RecPreProcessConfig::new().init(&device),
             rec: rec_model::Model::load(&device),
-            rec_postprocess: CtcDecoderConfig::pp_ocrv6_small().init(&device),
+            rec_postprocess: CtcDecoderConfig::pp_ocrv6_small().init(),
         }
     }
 }

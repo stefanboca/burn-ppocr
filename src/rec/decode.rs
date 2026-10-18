@@ -1,6 +1,6 @@
 use anyhow::Context;
 use burn::config::Config;
-use burn::tensor::{Device, Tensor};
+use burn::tensor::Tensor;
 
 use super::Recognition;
 
@@ -10,7 +10,7 @@ pub struct CtcDecoderConfig {
 }
 
 impl CtcDecoderConfig {
-    pub fn init(&self, _device: &Device) -> CtcDecoder {
+    pub fn init(&self) -> CtcDecoder {
         CtcDecoder {
             characters: self.characters.clone(),
         }

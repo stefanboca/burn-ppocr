@@ -100,15 +100,3 @@ impl RecPreProcess {
         imageops::resize(crop, width, height, imageops::FilterType::Triangle)
     }
 }
-
-#[cfg_attr(
-    feature = "profiling",
-    tracing::instrument(skip_all, name = "rec.orient_crop")
-)]
-pub fn orient_crop(crop: &RgbImage) -> RgbImage {
-    if crop.height() as f64 / crop.width() as f64 >= 1.5 {
-        imageops::rotate270(crop)
-    } else {
-        crop.clone()
-    }
-}
